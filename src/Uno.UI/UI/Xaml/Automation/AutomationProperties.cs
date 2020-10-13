@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using Uno.UI;
 using Windows.UI.Xaml.Automation.Peers;
+using Windows.UI.Xaml.Controls;
 
 namespace Windows.UI.Xaml.Automation
 {
@@ -25,7 +26,7 @@ namespace Windows.UI.Xaml.Automation
 				"Name",
 				typeof(string),
 				typeof(AutomationProperties),
-				new PropertyMetadata(string.Empty, OnNamePropertyChanged)
+				new FrameworkPropertyMetadata(string.Empty, OnNamePropertyChanged)
 			);
 
 
@@ -59,21 +60,21 @@ namespace Windows.UI.Xaml.Automation
 
 		#region LabeledBy
 		
-		public static IUIElement GetLabeledBy(DependencyObject element)
+		public static UIElement GetLabeledBy(DependencyObject element)
 		{
-			return (IUIElement)element.GetValue(LabeledByProperty);
+			return (UIElement)element.GetValue(LabeledByProperty);
 		}
 
-		public static void SetLabeledBy(DependencyObject element, IUIElement value)
+		public static void SetLabeledBy(DependencyObject element, UIElement value)
 		{
 			element.SetValue(LabeledByProperty, value);
 		}
 
 		public static DependencyProperty LabeledByProperty { get; } =
 			DependencyProperty.RegisterAttached(
-				"LabeledBy", typeof(IUIElement),
+				"LabeledBy", typeof(UIElement),
 				typeof(AutomationProperties),
-				new FrameworkPropertyMetadata(default(IUIElement))
+				new FrameworkPropertyMetadata(default(UIElement))
 			);
 
 		#endregion
@@ -145,9 +146,20 @@ namespace Windows.UI.Xaml.Automation
 				view.ContentDescription = (string)args.NewValue;
 			}
 #elif __WASM__
-			if (FrameworkElementHelper.IsUiAutomationMappingEnabled && dependencyObject is UIElement uiElement)
+			if (dependencyObject is UIElement uiElement)
 			{
-				uiElement.SetAttribute("xamlautomationid", (string)args.NewValue);
+				if (FrameworkElementHelper.IsUiAutomationMappingEnabled)
+				{
+					uiElement.SetAttribute("xamlautomationid", (string)args.NewValue);
+				}
+
+				var role = FindHtmlRole(uiElement);
+				if (role != null)
+				{
+					uiElement.SetAttribute(
+						("aria-label", (string)args.NewValue),
+						("role", role));
+				}
 			}
 #endif
 		}
@@ -158,5 +170,20 @@ namespace Windows.UI.Xaml.Automation
 		public static void SetAutomationId(DependencyObject element, string value)
 			=> element.SetValue(AutomationIdProperty, value);
 		#endregion
+
+#if __WASM__
+		private static string FindHtmlRole(UIElement uIElement) =>
+			uIElement switch
+			{
+				Button _ => "button",
+				RadioButton _ => "radio",
+				CheckBox _ => "checkbox",
+				TextBlock _ => "label",
+				TextBox _ => "textbox",
+				Slider _ => "slider",
+				_ => null
+			};
+#endif
+
 	}
 }

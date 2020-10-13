@@ -26,42 +26,52 @@ namespace Windows.UI.Xaml.Input
 			CanBubbleNatively = true; // Required for native gesture recognition (i.e. ScrollViewer), and integration of native components in the visual tree
 		}
 
-		internal PointerRoutedEventArgs(NSSet touches, UIEvent nativeEvent, UIElement receiver) : this()
+		internal PointerRoutedEventArgs(uint pointerId, UITouch nativeTouch, UIEvent nativeEvent, UIElement receiver) : this()
 		{
-			_nativeTouch = (UITouch)touches.AnyObject;
+			_nativeTouch = nativeTouch;
 			_nativeEvent = nativeEvent;
 
-			var pointerId = (uint)_nativeTouch.Type;
-			var type = _nativeTouch.Type == UITouchType.Stylus
-				? PointerDeviceType.Pen
-				: PointerDeviceType.Touch;
+			var deviceType = GetPointerDeviceType(nativeTouch.Type);
+						
 			var isInContact = _nativeTouch.Phase == UITouchPhase.Began
 				|| _nativeTouch.Phase == UITouchPhase.Moved
 				|| _nativeTouch.Phase == UITouchPhase.Stationary;
 
 			FrameId = ToFrameId(_nativeTouch.Timestamp);
-			Pointer = new Pointer(pointerId, type, isInContact, isInRange: true);
+			Pointer = new Pointer(pointerId, deviceType, isInContact, isInRange: true);
 			KeyModifiers = VirtualKeyModifiers.None;
 			OriginalSource = FindOriginalSource(_nativeTouch) ?? receiver;
-			CanBubbleNatively = true; // Required for native gesture recognition (i.e. ScrollViewer), and integration of native components in the visual tree
 		}
 
 		public PointerPoint GetCurrentPoint(UIElement relativeTo)
 		{
 			var timestamp = ToTimeStamp(_nativeTouch.Timestamp);
 			var device = PointerDevice.For(Pointer.PointerDeviceType);
-			var position = (Point)_nativeTouch.LocationInView(relativeTo);
+			var rawPosition = (Point)_nativeTouch.GetPreciseLocation(null);
+			var position = relativeTo == null
+				? rawPosition
+				: (Point)_nativeTouch.GetPreciseLocation(relativeTo);
 			var properties = GetProperties();
 
-			return new PointerPoint(FrameId, timestamp, device, Pointer.PointerId, position, position, Pointer.IsInContact, properties);
+			return new PointerPoint(FrameId, timestamp, device, Pointer.PointerId, rawPosition, position, Pointer.IsInContact, properties);
 		}
+
+		private PointerDeviceType GetPointerDeviceType(UITouchType touchType) =>
+			touchType switch
+			{				
+				UITouchType.Stylus => PointerDeviceType.Pen,
+				UITouchType.IndirectPointer => PointerDeviceType.Mouse,
+				UITouchType.Indirect => PointerDeviceType.Mouse,
+				_ => PointerDeviceType.Touch // Use touch as default fallback.
+			};
 
 		private PointerPointProperties GetProperties()
 			=> new PointerPointProperties()
 			{
 				IsPrimary = true,
 				IsInRange = Pointer.IsInRange,
-				IsLeftButtonPressed = Pointer.IsInContact
+				IsLeftButtonPressed = Pointer.IsInContact,
+				Pressure = (float)(_nativeTouch.Force / _nativeTouch.MaximumPossibleForce)
 			};
 
 		#region Misc static helpers

@@ -1,5 +1,4 @@
-﻿using Microsoft.Practices.ServiceLocation;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
@@ -23,7 +22,7 @@ using MonoTouch.UIKit;
 
 namespace Uno.UI.Controls
 {
-	public partial class BindableUIView : UIView, INotifyPropertyChanged, DependencyObject, IShadowChildrenProvider
+	public partial class BindableUIView : UIView, DependencyObject, IShadowChildrenProvider
 	{
 		private MaterializableList<UIView> _shadowChildren = new MaterializableList<UIView>();
 
@@ -56,16 +55,10 @@ namespace Uno.UI.Controls
 			}
 		}
 
-		public event PropertyChangedEventHandler PropertyChanged;
-
 		public BindableUIView()
 		{
 			Initialize();
-
-			if (FeatureConfiguration.UIElement.UseLegacyClipping)
-			{
-				ClipsToBounds = true;
-			}
+			ClipsToBounds = false;
 		}
 
 		public BindableUIView(IntPtr handle)
@@ -120,14 +113,6 @@ namespace Uno.UI.Controls
 			for (int i = reorderIndex; i < _shadowChildren.Count; i++)
 			{
 				BringSubviewToFront(_shadowChildren[i]);
-			}
-		}
-
-		protected void RaisePropertyChanged([CallerMemberName] string propertyName = null)
-		{
-			if (PropertyChanged != null)
-			{
-				PropertyChanged(this, new PropertyChangedEventArgs(propertyName));
 			}
 		}
 	}

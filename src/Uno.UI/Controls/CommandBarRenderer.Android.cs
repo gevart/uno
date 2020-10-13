@@ -1,6 +1,5 @@
 ﻿#if __ANDROID__
 using Android.Graphics.Drawables;
-using Android.Support.V7.Widget;
 using Android.Views;
 using System;
 using System.Collections.Generic;
@@ -14,14 +13,14 @@ using Windows.UI.Core;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Media;
-using Android.Support.V4.Graphics.Drawable;
-using Android.Support.V7.App;
 using Android.App;
 using Uno.Extensions;
 using Uno.Logging;
 using Microsoft.Extensions.Logging;
 using Android.Views.InputMethods;
 using Android.Content;
+using AndroidX.AppCompat.Widget;
+using AndroidX.Core.Graphics.Drawable;
 
 namespace Uno.UI.Controls
 {
@@ -79,7 +78,15 @@ namespace Uno.UI.Controls
 				// According to Google's Material Design Guidelines, the Toolbar must have a minimum height of 48.
 				// https://material.io/guidelines/layout/structure.html
 				Height = 48,
+				Name = "CommandBarRendererContentHolder",
+
+				// Set the alignment so that the measured sized
+				// returned is size of the child, not the available
+				// size provided to the ToolBar view.
+				VerticalAlignment = VerticalAlignment.Top,
+				HorizontalAlignment = HorizontalAlignment.Left,
 			};
+
 			_contentContainer.SetParent(Element);
 			Native.AddView(_contentContainer);
 			yield return Disposable.Create(() => Native.RemoveView(_contentContainer));
@@ -115,6 +122,9 @@ namespace Uno.UI.Controls
 				new[] { CommandBar.VisibilityProperty },
 				new[] { CommandBar.PaddingProperty },
 				new[] { CommandBar.OpacityProperty },
+				new[] { CommandBar.HorizontalContentAlignmentProperty },
+				new[] { CommandBar.VerticalContentAlignmentProperty },
+				new[] { CommandBar.OpacityProperty },
 				new[] { SubtitleProperty },
 				new[] { NavigationCommandProperty },
 				new[] { BackButtonVisibilityProperty },
@@ -140,8 +150,10 @@ namespace Uno.UI.Controls
 		{
 			// Content
 			Native.Title = Element.Content as string;
-			_contentContainer.Child = Element.Content as View;
-			_contentContainer.Visibility = Element.Content is View
+			_contentContainer.Child = Element.Content as UIElement;
+			_contentContainer.VerticalAlignment = Element.VerticalContentAlignment;
+			_contentContainer.HorizontalAlignment = Element.HorizontalContentAlignment;
+			_contentContainer.Visibility = Element.Content is UIElement
 				? Visibility.Visible
 				: Visibility.Collapsed;
 
@@ -212,7 +224,7 @@ namespace Uno.UI.Controls
 				}
 				else
 				{
-					Native.NavigationIcon = new Android.Support.V7.Graphics.Drawable.DrawerArrowDrawable(ContextHelper.Current)
+					Native.NavigationIcon = new AndroidX.AppCompat.Graphics.Drawable.DrawerArrowDrawable(ContextHelper.Current)
 					{
 						// 0 = menu icon
 						// 1 = back icon
@@ -226,7 +238,7 @@ namespace Uno.UI.Controls
 				{
 					switch (Native.NavigationIcon)
 					{
-						case Android.Support.V7.Graphics.Drawable.DrawerArrowDrawable drawerArrowDrawable:
+						case AndroidX.AppCompat.Graphics.Drawable.DrawerArrowDrawable drawerArrowDrawable:
 							drawerArrowDrawable.Color = (Android.Graphics.Color)backButtonForeground;
 							break;
 						case Drawable drawable:
@@ -256,7 +268,7 @@ namespace Uno.UI.Controls
 			Native.Alpha = (float)Element.Opacity;
 		}
 
-		private IEnumerable<IMenuItem> GetMenuItems(IMenu menu)
+		private IEnumerable<IMenuItem> GetMenuItems(Android.Views.IMenu menu)
 		{
 			for (int i = 0; i < menu.Size(); i++)
 			{

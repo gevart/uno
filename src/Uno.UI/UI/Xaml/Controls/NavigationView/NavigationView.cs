@@ -32,6 +32,8 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Media.Animation;
 using Uno.Extensions.Specialized;
+using Windows.UI.ViewManagement;
+using Uno.UI;
 
 namespace Windows.UI.Xaml.Controls
 {
@@ -265,8 +267,8 @@ namespace Windows.UI.Xaml.Controls
 			if (GetTemplateChild(c_topNavOverflowButton) is Button topNavOverflowButton)
 			{
 				m_topNavOverflowButton = topNavOverflowButton;
-				AutomationProperties.SetName(topNavOverflowButton, ResourceAccessor.GetLocalizedStringResource("NavigationOverflowButtonText"));
-				topNavOverflowButton.Content = ResourceAccessor.GetLocalizedStringResource("NavigationOverflowButtonText");
+				AutomationProperties.SetName(topNavOverflowButton, ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_NavigationOverflowButtonText));
+				topNavOverflowButton.Content = ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_NavigationOverflowButtonText);
 				var visual = ElementCompositionPreview.GetElementVisual(topNavOverflowButton);
 				CreateAndAttachHeaderAnimation(visual);
 			}
@@ -300,7 +302,7 @@ namespace Windows.UI.Xaml.Controls
 				m_paneSearchButton = button;
 				button.Click += OnPaneSearchButtonClick;
 
-				var searchButtonName = ResourceAccessor.GetLocalizedStringResource("NavigationViewSearchButtonName");
+				var searchButtonName = ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_NavigationViewSearchButtonName);
 				AutomationProperties.SetName(button, searchButtonName);
 
 #if !IS_UNO // UNO TODO Missing Tooltop
@@ -315,13 +317,13 @@ namespace Windows.UI.Xaml.Controls
 				m_backButton = backButton;
 				backButton.Click += OnBackButtonClicked;
         
-				string navigationName = ResourceAccessor.GetLocalizedStringResource("NavigationBackButtonName");
+				string navigationName = ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_NavigationBackButtonName);
 				AutomationProperties.SetName(backButton, navigationName);
 			}
 
 			if (GetTemplateChild(c_navViewBackButtonToolTip) is ToolTip backButtonToolTip)
 			{
-				string navigationBackButtonToolTip = ResourceAccessor.GetLocalizedStringResource("NavigationBackButtonToolTip");
+				string navigationBackButtonToolTip = ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_NavigationBackButtonToolTip);
 				backButtonToolTip.Content =  navigationBackButtonToolTip;
 			}
 
@@ -371,7 +373,7 @@ namespace Windows.UI.Xaml.Controls
 			UpdateSingleSelectionFollowsFocusTemplateSetting();
 			UpdateNavigationViewUseSystemVisual();
 			PropagateNavigationViewAsParent();
-			UpdateVisualState();
+			UpdateLocalVisualState();
 		}
 
 		// Hook up the Settings Item Invoked event listener
@@ -404,7 +406,7 @@ namespace Windows.UI.Xaml.Controls
 				d.Add(() => settingsItem.KeyUp -= OnSettingsKeyUp);
 
 				// Do localization for settings item label and Automation Name
-				var localizedSettingsName = ResourceAccessor.GetLocalizedStringResource("SettingsButtonName");
+				var localizedSettingsName = ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_SettingsButtonName);
 				AutomationProperties.SetName(settingsItem, localizedSettingsName);
 				UpdateSettingsItemToolTip();
 
@@ -842,11 +844,11 @@ namespace Windows.UI.Xaml.Controls
 			string navigationName;
 			if (IsPaneOpen)
 			{
-				navigationName = ResourceAccessor.GetLocalizedStringResource("NavigationButtonOpenName");
+				navigationName = ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_NavigationButtonOpenName);
 			}
 			else
 			{
-				navigationName = ResourceAccessor.GetLocalizedStringResource("NavigationButtonClosedName");
+				navigationName = ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_NavigationButtonClosedName);
 			}
 
 			var paneToggleButton = m_paneToggleButton;
@@ -874,7 +876,7 @@ namespace Windows.UI.Xaml.Controls
 				{
 
 #if !IS_UNO
-					var localizedSettingsName = ResourceAccessor.GetLocalizedStringResource("SettingsButtonName");
+					var localizedSettingsName = ResourceAccessor.GetLocalizedStringResource(ResourceAccessor.SR_SettingsButtonName);
 					var toolTip = ToolTip;
 					toolTip.Content = localizedSettingsName;
 					ToolTipService.SetToolTip(settingsItem, toolTip);
@@ -2048,7 +2050,7 @@ namespace Windows.UI.Xaml.Controls
 			}
 		}
 
-		void UpdateVisualState(bool useTransitions = false)
+		private void UpdateLocalVisualState(bool useTransitions = false)
 		{
 			if (m_appliedTemplate)
 			{
@@ -2240,7 +2242,7 @@ namespace Windows.UI.Xaml.Controls
 
 					// In our test environment, m_measureOnInitStep2Count should <= 2 since we didn't hide anything from code
 					// so the assert count is different from s_measureOnInitStep2CountThreshold 
-					global::System.Diagnostics.Debug.Assert(m_measureOnInitStep2Count <= 2);
+					// global::System.Diagnostics.Debug.Assert(m_measureOnInitStep2Count <= 2); // This assert doesn't seem to be relevant on Uno
 
 					if (m_measureOnInitStep2Count >= s_measureOnInitStep2CountThreshold || !IsTopNavigationFirstMeasure())
 					{
@@ -2697,7 +2699,7 @@ namespace Windows.UI.Xaml.Controls
 				UpdatePaneDisplayMode((NavigationViewPaneDisplayMode)args.OldValue, (NavigationViewPaneDisplayMode)args.NewValue);
 				UpdatePaneToggleButtonVisibility();
 				UpdatePaneVisibility();
-				UpdateVisualState();
+				UpdateLocalVisualState();
 			}
 			else if (property == IsPaneVisibleProperty)
 			{
@@ -2724,11 +2726,11 @@ namespace Windows.UI.Xaml.Controls
 			else if (property == IsPaneToggleButtonVisibleProperty)
 			{
 				UpdatePaneToggleButtonVisibility();
-				UpdateVisualState();
+				UpdateLocalVisualState();
 			}
 			else if (property == IsSettingsVisibleProperty)
 			{
-				UpdateVisualState();
+				UpdateLocalVisualState();
 			}        
 		}
 
@@ -2793,7 +2795,18 @@ namespace Windows.UI.Xaml.Controls
 					}
 				}
 			}
+
 			SetPaneToggleButtonAutomationName();
+
+			// ***************************** Uno only - begin
+			// When the OnSplitViewClosedCompactChanged callback is invoked (registered on SplitView.IsPaneOpen),
+			// the two-way binding between SplitView.IsOpen and NavView.IsPaneOpen has not been updated yet,
+			// the the local NavView.IsPaneOpen is still == true. (cf. https://github.com/unoplatform/uno/issues/3774)
+			// (Yeah ... there is 2 code path to track the IsPaneOpen of the SplitView: callback and 2-way binding :/)
+			// So we make sure to request an update of the back button visibility also when the local IsPaneOpen is being updated.
+			UpdateBackButtonVisibility();
+			// ***************************** Uno only - end
+
 			UpdatePaneTabFocusNavigation();
 			UpdateSettingsItemToolTip();
 		}
@@ -3015,18 +3028,7 @@ namespace Windows.UI.Xaml.Controls
 				var splitView = m_rootSplitView;
 				if (splitView != null)
 				{
-					double width = c_paneToggleButtonWidth;
-
-					var resourceName = "PaneToggleButtonWidth";
-					if (Application.Current.Resources.HasKey(resourceName))
-					{
-						var lookup = Application.Current.Resources.Lookup(resourceName);
-						if (lookup is double value)
-						{
-							width = value;
-						}
-					}
-
+					var width = ResourceResolver.ResolveTopLevelResourceDouble(key: "PaneToggleButtonWidth", fallbackValue: c_paneToggleButtonWidth);
 					double togglePaneButtonWidth = width;
 
 					if (ShouldShowBackButton() && splitView.DisplayMode == SplitViewDisplayMode.Overlay)
@@ -3043,12 +3045,15 @@ namespace Windows.UI.Xaml.Controls
 
 					if (!m_isClosedCompact && PaneTitle?.Length > 0)
 					{
-						if (splitView.DisplayMode == SplitViewDisplayMode.Overlay && IsPaneOpen)
+						// if splitView.IsPaneOpen changed directly by SplitView,
+						// the two-way binding haven't sync'd up IsPaneOpen yet.
+						var isPaneOpen = m_isOpenPaneForInteraction ? IsPaneOpen : splitView.IsPaneOpen;
+						if (splitView.DisplayMode == SplitViewDisplayMode.Overlay && isPaneOpen)
 						{
 							width = OpenPaneLength;
 							togglePaneButtonWidth = OpenPaneLength - (ShouldShowBackButton() ? c_backButtonWidth : 0);
 						}
-						else if (!(splitView.DisplayMode == SplitViewDisplayMode.Overlay && !IsPaneOpen))
+						else if (!(splitView.DisplayMode == SplitViewDisplayMode.Overlay && !isPaneOpen))
 						{
 							width = OpenPaneLength;
 							togglePaneButtonWidth = OpenPaneLength;
@@ -3125,12 +3130,7 @@ namespace Windows.UI.Xaml.Controls
 			{
 				double width = 0;
 
-				double buttonSize = c_paneToggleButtonWidth; // in case the resource lookup fails
-				var lookup = Application.Current.Resources.Lookup("PaneToggleButtonWidth");
-				if (lookup is double value)
-				{
-					buttonSize = value;
-				}
+				var buttonSize = ResourceResolver.ResolveTopLevelResourceDouble(key: "PaneToggleButtonWidth", fallbackValue: c_paneToggleButtonWidth);
 
 				width += buttonSize;
 
@@ -3385,17 +3385,17 @@ namespace Windows.UI.Xaml.Controls
 			// ApplicationView.GetForCurrentView() is an expensive call - make sure to cache the ApplicationView
 			if (m_applicationView == null)
 			{
-				m_applicationView = ViewManagement.ApplicationView.GetForCurrentView();
+				m_applicationView = ApplicationView.GetForCurrentView();
 			}
 
 			// UIViewSettings.GetForCurrentView() is an expensive call - make sure to cache the UIViewSettings
 			if (m_uiViewSettings == null)
 			{
-				m_uiViewSettings = ViewManagement.UIViewSettings.GetForCurrentView();
+				m_uiViewSettings = UIViewSettings.GetForCurrentView();
 			}
 
 			bool isFullScreenMode = m_applicationView.IsFullScreenMode;
-			bool isTabletMode = m_uiViewSettings.UserInteractionMode == ViewManagement.UserInteractionMode.Touch;
+			bool isTabletMode = m_uiViewSettings.UserInteractionMode == UserInteractionMode.Touch;
 
 			return isFullScreenMode || isTabletMode;
 		}

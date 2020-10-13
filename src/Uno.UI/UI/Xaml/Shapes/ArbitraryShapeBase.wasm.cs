@@ -5,6 +5,8 @@ using Windows.Foundation;
 using Windows.UI.Xaml.Media;
 using Uno.Disposables;
 using System.Numerics;
+using Uno.UI;
+using Windows.UI.Xaml.Wasm;
 
 namespace Windows.UI.Xaml.Shapes
 {
@@ -15,12 +17,11 @@ namespace Windows.UI.Xaml.Shapes
 		private double _scaleY;
 #pragma warning restore CS0067, CS0649
 
-		private IDisposable BuildDrawableLayer()
-		{
-			return Disposable.Empty;
-		}
+		private IDisposable BuildDrawableLayer() => Disposable.Empty;
 
 		private Size GetActualSize() => Size.Empty;
+
+		protected virtual void InvalidateShape() { }
 
 		protected override Size MeasureOverride(Size availableSize)
 		{
@@ -30,6 +31,8 @@ namespace Windows.UI.Xaml.Shapes
 			{
 				return new Size();
 			}
+
+			InvalidateShape();
 
 			var measurements = GetMeasurements(availableSize);
 			var desiredSize = measurements.desiredSize;
@@ -54,8 +57,13 @@ namespace Windows.UI.Xaml.Shapes
 			var translate = Matrix3x2.CreateTranslation((float)measurements.translateX, (float)measurements.translateY);
 			var matrix = translate * scale;
 
-			foreach (FrameworkElement child in GetChildren())
+			foreach (var child in GetChildren())
 			{
+				if (child is DefsSvgElement)
+				{
+					// Defs hosts non-visual objects
+					continue;
+				}
 				child.SetNativeTransform(matrix);
 			}
 
@@ -73,7 +81,7 @@ namespace Windows.UI.Xaml.Shapes
 				return (new Size(contentBBox.Right, contentBBox.Bottom), 0, 0, 1, 1);
 			}
 
-			var contentAspectRatio = contentBBox.Width / contentBBox.Height;
+			var contentAspectRatio = contentBBox.AspectRatio();
 
 			//  Calculate the control size
 			var calculatedWidth = LimitWithUserSize(availableSize.Width, Width, contentBBox.Width);
@@ -141,8 +149,14 @@ namespace Windows.UI.Xaml.Shapes
 		{
 			var bbox = Rect.Empty;
 
-			foreach (FrameworkElement child in GetChildren())
+			foreach (var child in GetChildren())
 			{
+				if (child is DefsSvgElement)
+				{
+					// Defs hosts non-visual objects
+					continue;
+				}
+
 				var childRect = GetBBoxWithStrokeThickness(child);
 				if (bbox == Rect.Empty)
 				{
@@ -157,7 +171,7 @@ namespace Windows.UI.Xaml.Shapes
 			return bbox;
 		}
 
-		private Rect GetBBoxWithStrokeThickness(FrameworkElement element)
+		private Rect GetBBoxWithStrokeThickness(UIElement element)
 		{
 			var bbox = element.GetBBox();
 			if (Stroke == null || StrokeThickness < double.Epsilon)

@@ -7,7 +7,9 @@
 
 using System;
 using Windows.System;
+using Windows.UI.Xaml.Controls.Primitives;
 using Windows.UI.Xaml.Input;
+using Uno.UI;
 
 namespace Windows.UI.Xaml.Controls
 {
@@ -27,13 +29,11 @@ namespace Windows.UI.Xaml.Controls
 
 		public NavigationViewList() : base()
 		{
-			Style = Style.DefaultStyleForType(typeof(ListView));
+			// We don't need to overwrite DefaultStyleKey because NavigationViewList uses the Style of ListView.
 		}
 
 		protected override DependencyObject GetContainerForItemOverride()
-			=> new NavigationViewItem() { IsGeneratedContainer = true };
-
-
+			=> IsTemplateOwnContainer ? CreateOwnContainer() : new NavigationViewItem() { IsGeneratedContainer = true };
 
 		// IItemsControlOverrides
 

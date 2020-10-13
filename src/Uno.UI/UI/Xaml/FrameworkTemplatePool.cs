@@ -1,4 +1,10 @@
-﻿using System;
+﻿#nullable enable
+
+#if NETSTANDARD
+#define USE_HARD_REFERENCES
+#endif
+
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Diagnostics;
@@ -83,6 +89,21 @@ namespace Windows.UI.Xaml
 		private readonly Stopwatch _watch = new Stopwatch();
 		private readonly Dictionary<FrameworkTemplate, List<TemplateEntry>> _pooledInstances = new Dictionary<FrameworkTemplate, List<TemplateEntry>>(FrameworkTemplate.FrameworkTemplateEqualityComparer.Default);
 
+#if USE_HARD_REFERENCES
+		/// <summary>
+		/// List of instances managed by the pool
+		/// </summary>
+		/// <remarks>
+		/// This list is required to avoid the GC to collect the instances. Othewise, the pooled instance
+		/// may never get its Parent property set to null, and the pool will never get notified that an instance
+		/// can be reused.
+		///
+		/// The root of the behavior is linked to WeakReferences to objects pending for finalizers are considered
+		/// null, something that does not happen on Xamarin.iOS/Android.
+		/// </remarks>
+		private readonly HashSet<UIElement> _activeInstances = new HashSet<View>();
+#endif
+
 		/// <summary>
 		/// Determines the duration for which a pooled template stays alive.
 		/// </summary>
@@ -133,7 +154,7 @@ namespace Windows.UI.Xaml
 
 				// Under iOS and Android, we need to force the collection for the GC
 				// to pick up the orphan instances that we've just released.
-				
+
 				GC.Collect();
 			}
 		}
@@ -151,7 +172,7 @@ namespace Windows.UI.Xaml
 
 			View instance;
 
-			if (list?.Count == 0)
+			if (list.Count == 0)
 			{
 				if (_trace.IsEnabled)
 				{
@@ -160,7 +181,7 @@ namespace Windows.UI.Xaml
 
 				if (this.Log().IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
 				{
-					this.Log().Debug($"Creating new template, id={GetTemplateDebugId(template)}");
+					this.Log().Debug($"Creating new template, id={GetTemplateDebugId(template)} IsPoolingEnabled:{IsPoolingEnabled}");
 				}
 
 				instance = template.LoadContent();
@@ -187,6 +208,12 @@ namespace Windows.UI.Xaml
 				}
 			}
 
+#if USE_HARD_REFERENCES
+			if (IsPoolingEnabled)
+			{
+				_activeInstances.Add(instance);
+			}
+#endif
 			return instance;
 		}
 
@@ -202,17 +229,22 @@ namespace Windows.UI.Xaml
 			return instances;
 		}
 
-		private void OnParentChanged(object instance, object key, DependencyObjectParentChangedEventArgs args)
+		/// <summary>
+		/// Manually return an unused template root to the pool.
+		/// </summary>
+		internal void ReleaseTemplateRoot(View root, FrameworkTemplate template) => OnParentChanged(root, template, args: null);
+
+		private void OnParentChanged(object instance, object? key, DependencyObjectParentChangedEventArgs? args)
 		{
-			var list = GetTemplatePool(key as FrameworkTemplate);
-
-			if (args.NewParent == null)
+			if (!IsPoolingEnabled)
 			{
-				if (list == null)
-				{
-					list = GetTemplatePool(key as FrameworkTemplate);
-				}
+				return;
+			}
 
+			var list = GetTemplatePool(key as FrameworkTemplate ?? throw new InvalidOperationException($"Received {key} but expecting {typeof(FrameworkElement)}"));
+
+			if (args?.NewParent == null)
+			{
 				if (_trace.IsEnabled)
 				{
 					_trace.WriteEventActivity(TraceProvider.RecycleTemplate, EventOpcode.Send, new[] { instance.GetType().ToString() });
@@ -220,7 +252,20 @@ namespace Windows.UI.Xaml
 
 				PropagateOnTemplateReused(instance);
 
-				list.Add(new TemplateEntry(_watch.Elapsed, instance as View));
+				var item = instance as View;
+
+				if (item != null)
+				{
+					list.Add(new TemplateEntry(_watch.Elapsed, item));
+#if USE_HARD_REFERENCES
+					_activeInstances.Remove(item);
+#endif
+				}
+				else if (this.Log().IsEnabled(Microsoft.Extensions.Logging.LogLevel.Warning))
+				{
+					this.Log().Warn($"Enqueued template root was not a view");
+				}
+
 
 				if (this.Log().IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
 				{
@@ -241,7 +286,7 @@ namespace Windows.UI.Xaml
 		internal static void PropagateOnTemplateReused(object instance)
 		{
 			// If DataContext is not null, it means it has been explicitly set (not inherited). Resetting the view could push an invalid value through 2-way binding in this case.
-			if (instance is IFrameworkTemplatePoolAware templateAwareElement && (instance as IFrameworkElement).DataContext == null)
+			if (instance is IFrameworkTemplatePoolAware templateAwareElement && (instance as IFrameworkElement)!.DataContext == null)
 			{
 				templateAwareElement.OnTemplateRecycled();
 			}
@@ -263,7 +308,7 @@ namespace Windows.UI.Xaml
 			}
 		}
 
-		private string GetTemplateDebugId(FrameworkTemplate template)
+		private string GetTemplateDebugId(FrameworkTemplate? template)
 		{
 			//Grossly inefficient, should only be used for debug logging
 			int i = -1;

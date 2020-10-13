@@ -17,7 +17,7 @@ namespace Windows.UI.Xaml.Controls
 		private NSDate _initialTime;
 		private NSDate _newDate;
 
-		protected override void OnLoaded()
+		private protected override void OnLoaded()
 		{
 			base.OnLoaded();
 
@@ -78,7 +78,7 @@ namespace Windows.UI.Xaml.Controls
 			{
 				if ((_newDate != null) && _newDate != _initialTime)
 				{
-					var time = _newDate.ToTimeSpan(_picker.TimeZone.GetSecondsFromGMT);
+					var time = _newDate.ToTimeSpanOfDay(_picker.TimeZone.GetSecondsFromGMT);
 
 					if (Time.Hours != time.Hours || Time.Minutes != time.Minutes)
 					{
@@ -137,7 +137,7 @@ namespace Windows.UI.Xaml.Controls
 			return new NSLocale(localeID);
 		}
 
-		protected override void OnUnloaded()
+		private protected override void OnUnloaded()
 		{
 			_picker.ValueChanged -= OnValueChanged;
 

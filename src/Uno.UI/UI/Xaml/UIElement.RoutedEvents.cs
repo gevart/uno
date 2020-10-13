@@ -1,5 +1,7 @@
-﻿using System;
+﻿// #define TRACE_ROUTED_EVENT_BUBBLING
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using Windows.UI.Xaml.Input;
@@ -8,6 +10,7 @@ using Uno;
 using Uno.Extensions;
 using Uno.Logging;
 using Uno.UI;
+using Uno.UI.Extensions;
 using Uno.UI.Xaml;
 using Uno.UI.Xaml.Input;
 
@@ -91,6 +94,11 @@ namespace Windows.UI.Xaml
 
 		public static RoutedEvent PointerCaptureLostEvent { get; } = new RoutedEvent(RoutedEventFlag.PointerCaptureLost);
 
+#if !__WASM__
+		[global::Uno.NotImplemented]
+#endif
+		public static RoutedEvent PointerWheelChangedEvent { get; } = new RoutedEvent(RoutedEventFlag.PointerWheelChanged);
+
 		public static RoutedEvent ManipulationStartingEvent { get; } = new RoutedEvent(RoutedEventFlag.ManipulationStarting);
 
 		public static RoutedEvent ManipulationStartedEvent { get; } = new RoutedEvent(RoutedEventFlag.ManipulationStarted);
@@ -104,6 +112,10 @@ namespace Windows.UI.Xaml
 		public static RoutedEvent TappedEvent { get; } = new RoutedEvent(RoutedEventFlag.Tapped);
 
 		public static RoutedEvent DoubleTappedEvent { get; } = new RoutedEvent(RoutedEventFlag.DoubleTapped);
+
+		public static RoutedEvent RightTappedEvent { get; } = new RoutedEvent(RoutedEventFlag.RightTapped);
+
+		public static RoutedEvent HoldingEvent { get; } = new RoutedEvent(RoutedEventFlag.Holding);
 
 		public static RoutedEvent KeyDownEvent { get; } = new RoutedEvent(RoutedEventFlag.KeyDown);
 
@@ -128,7 +140,7 @@ namespace Windows.UI.Xaml
 
 		#region EventsBubblingInManagedCode DependencyProperty
 
-		public static readonly DependencyProperty EventsBubblingInManagedCodeProperty = DependencyProperty.Register(
+		public static DependencyProperty EventsBubblingInManagedCodeProperty { get ; } = DependencyProperty.Register(
 			"EventsBubblingInManagedCode",
 			typeof(RoutedEventFlag),
 			typeof(UIElement),
@@ -150,7 +162,7 @@ namespace Windows.UI.Xaml
 
 		#region SubscribedToHandledEventsToo DependencyProperty
 
-		private static readonly DependencyProperty SubscribedToHandledEventsTooProperty =
+		private static DependencyProperty SubscribedToHandledEventsTooProperty { get ; } =
 			DependencyProperty.Register(
 				"SubscribedToHandledEventsToo",
 				typeof(RoutedEventFlag),
@@ -255,6 +267,15 @@ namespace Windows.UI.Xaml
 			remove => RemoveHandler(PointerReleasedEvent, value);
 		}
 
+#if !__WASM__ && !__SKIA__
+		[global::Uno.NotImplemented]
+#endif
+		public event PointerEventHandler PointerWheelChanged
+		{
+			add => AddHandler(PointerWheelChangedEvent, value, false);
+			remove => RemoveHandler(PointerWheelChangedEvent, value);
+		}
+
 		public event ManipulationStartingEventHandler ManipulationStarting
 		{
 			add => AddHandler(ManipulationStartingEvent, value, false);
@@ -297,6 +318,18 @@ namespace Windows.UI.Xaml
 			remove => RemoveHandler(DoubleTappedEvent, value);
 		}
 
+		public event RightTappedEventHandler RightTapped
+		{
+			add => AddHandler(RightTappedEvent, value, false);
+			remove => RemoveHandler(RightTappedEvent, value);
+		}
+
+		public event HoldingEventHandler Holding
+		{
+			add => AddHandler(HoldingEvent, value, false);
+			remove => RemoveHandler(HoldingEvent, value);
+		}
+
 #if __MACOS__
 		public new event KeyEventHandler KeyDown
 #else
@@ -336,7 +369,8 @@ namespace Windows.UI.Xaml
 
 			AddHandler(routedEvent, handlers.Count, handler, handledEventsToo);
 
-			if (handledEventsToo)
+			if (handledEventsToo
+				&& !routedEvent.IsAlwaysBubbled) // This event is always bubbled, no needs to update the flag
 			{
 				UpdateSubscribedToHandledEventsToo();
 			}
@@ -349,7 +383,8 @@ namespace Windows.UI.Xaml
 
 			AddHandler(routedEvent, handlers.Count, handler, handledEventsToo);
 
-			if (handledEventsToo)
+			if (handledEventsToo
+				&& !routedEvent.IsAlwaysBubbled) // This event is always bubbled, no needs to update the flag
 			{
 				UpdateSubscribedToHandledEventsToo();
 			}
@@ -395,7 +430,8 @@ namespace Windows.UI.Xaml
 				{
 					handlers.Remove(matchingHandler);
 
-					if (matchingHandler.HandledEventsToo)
+					if (matchingHandler.HandledEventsToo
+						&& !routedEvent.IsAlwaysBubbled) // This event is always bubbled, no need to update the flag
 					{
 						UpdateSubscribedToHandledEventsToo();
 					}
@@ -450,6 +486,12 @@ namespace Windows.UI.Xaml
 
 			foreach (var eventHandlers in _eventHandlerStore)
 			{
+				if (eventHandlers.Key.IsAlwaysBubbled)
+				{
+					// This event is always bubbled, no need to include it in the SubscribedToHandledEventsToo
+					continue;
+				}
+
 				foreach (var handler in eventHandlers.Value)
 				{
 					if (handler.HandledEventsToo)
@@ -489,6 +531,10 @@ namespace Windows.UI.Xaml
 		/// </remarks>
 		internal bool RaiseEvent(RoutedEvent routedEvent, RoutedEventArgs args)
 		{
+#if TRACE_ROUTED_EVENT_BUBBLING
+			Debug.Write(new string('\t', Depth) + $"[{routedEvent.Name.Trim().ToUpperInvariant()}] {this.GetDebugName()}\r\n");
+#endif
+
 			if (routedEvent.Flag == RoutedEventFlag.None)
 			{
 				throw new InvalidOperationException($"Flag not defined for routed event {routedEvent.Name}.");
@@ -560,7 +606,42 @@ namespace Windows.UI.Xaml
 		// This method is a workaround for https://github.com/mono/mono/issues/12981
 		// It can be inlined in RaiseEvent when fixed.
 		private static bool RaiseOnParent(RoutedEvent routedEvent, RoutedEventArgs args, UIElement parent)
-			=> parent.RaiseEvent(routedEvent, args);
+			=> parent.PrepareManagedEventBubbling(routedEvent, args, out args)
+				&& parent.RaiseEvent(routedEvent, args);
+
+		private bool PrepareManagedEventBubbling(RoutedEvent routedEvent, RoutedEventArgs args, out RoutedEventArgs alteredArgs)
+		{
+			var isBubblingAllowed = true;
+			alteredArgs = args;
+			if (routedEvent.IsPointerEvent)
+			{
+				PrepareManagedPointerEventBubbling(routedEvent, ref alteredArgs, ref isBubblingAllowed);
+			}
+			else if (routedEvent.IsKeyEvent)
+			{
+				PrepareManagedKeyEventBubbling(routedEvent, ref alteredArgs, ref isBubblingAllowed);
+			}
+			else if (routedEvent.IsFocusEvent)
+			{
+				PrepareManagedFocusEventBubbling(routedEvent, ref alteredArgs, ref isBubblingAllowed);
+			}
+			else if (routedEvent.IsManipulationEvent)
+			{
+				PrepareManagedManipulationEventBubbling(routedEvent, ref alteredArgs, ref isBubblingAllowed);
+			}
+			else if (routedEvent.IsGestureEvent)
+			{
+				PrepareManagedGestureEventBubbling(routedEvent, ref alteredArgs, ref isBubblingAllowed);
+			}
+
+			return isBubblingAllowed;
+		}
+
+		partial void PrepareManagedPointerEventBubbling(RoutedEvent routedEvent, ref RoutedEventArgs args, ref bool isBubblingAllowed);
+		partial void PrepareManagedKeyEventBubbling(RoutedEvent routedEvent, ref RoutedEventArgs args, ref bool isBubblingAllowed);
+		partial void PrepareManagedFocusEventBubbling(RoutedEvent routedEvent, ref RoutedEventArgs args, ref bool isBubblingAllowed);
+		partial void PrepareManagedManipulationEventBubbling(RoutedEvent routedEvent, ref RoutedEventArgs args, ref bool isBubblingAllowed);
+		partial void PrepareManagedGestureEventBubbling(RoutedEvent routedEvent, ref RoutedEventArgs args, ref bool isBubblingAllowed);
 
 		private static bool IsHandled(RoutedEventArgs args)
 		{
@@ -585,6 +666,14 @@ namespace Windows.UI.Xaml
 
 		private bool AnyParentInterested(RoutedEvent routedEvent)
 		{
+			// Pointer events must always be dispatched to all parents in order to update visual states,
+			// update manipulation, detect gestures, etc.
+			// (They are then interpreted by each parent in the PrepareManagedPointerEventBubbling)
+			if (routedEvent.IsAlwaysBubbled)
+			{
+				return true;
+			}
+
 			// [9] Any parent interested?
 			var subscribedToHandledEventsToo = SubscribedToHandledEventsToo;
 			var flag = routedEvent.Flag;
@@ -608,6 +697,12 @@ namespace Windows.UI.Xaml
 					break;
 				case DoubleTappedEventHandler doubleTappedEventHandler:
 					doubleTappedEventHandler(this, (DoubleTappedRoutedEventArgs)args);
+					break;
+				case RightTappedEventHandler rightTappedEventHandler:
+					rightTappedEventHandler(this, (RightTappedRoutedEventArgs)args);
+					break;
+				case HoldingEventHandler holdingEventHandler:
+					holdingEventHandler(this, (HoldingRoutedEventArgs)args);
 					break;
 				case KeyEventHandler keyEventHandler:
 					keyEventHandler(this, (KeyRoutedEventArgs)args);

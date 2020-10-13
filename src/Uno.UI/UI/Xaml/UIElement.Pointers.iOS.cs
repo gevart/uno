@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -15,17 +16,65 @@ namespace Windows.UI.Xaml
 {
 	partial class UIElement
 	{
+		private class NativePointerId
+		{
+			private static readonly Dictionary<IntPtr, NativePointerId> _instances = new Dictionary<IntPtr, NativePointerId>();
+			private static uint _nextAvailablePointerId;
+
+			private readonly IntPtr _nativeId;
+			private readonly HashSet<UIElement> _leases = new HashSet<UIElement>();
+
+			public uint Value { get; }
+
+			private NativePointerId(IntPtr nativeId)
+			{
+				_nativeId = nativeId;
+				Value = _nextAvailablePointerId++;
+			}
+
+			public static NativePointerId Get(UIElement element, UITouch touch)
+			{
+				if (!_instances.TryGetValue(touch.Handle, out var id))
+				{
+					_instances[touch.Handle] = id = new NativePointerId(touch.Handle);
+				}
+
+				id._leases.Add(element);
+
+				return id;
+			}
+
+			public void Release(UIElement element)
+			{
+				if (_leases.Remove(element) && _leases.Count == 0)
+				{
+					if (_instances.Remove(_nativeId) && _instances.Count == 0)
+					{
+						// When all pointers are released, we reset the pointer ID to 0.
+						// This is required to detect a DoubleTap where pointer ID must be the same.
+						_nextAvailablePointerId = 0;
+					}
+				}
+			}
+		}
+
 		private IEnumerable<TouchesManager> _parentsTouchesManager;
 		private bool _isManipulating;
 
 		partial void InitializePointersPartial()
 		{
+			MultipleTouchEnabled = true;
 			RegisterLoadActions(PrepareParentTouchesManagers, ReleaseParentTouchesManager);
 		}
 
 		#region Native touch handling (i.e. source of the pointer / gesture events)
 		public override void TouchesBegan(NSSet touches, UIEvent evt)
 		{
+			if (IsPointersSuspended)
+			{
+				return; // Will also prevent subsequents events
+			}
+
 			/* Note: Here we have a mismatching behavior with UWP, if the events bubble natively we're going to get
 					 (with Ctrl_02 is a child of Ctrl_01):
 							Ctrl_02: Entered
@@ -47,11 +96,15 @@ namespace Windows.UI.Xaml
 			{
 				NotifyParentTouchesManagersManipulationStarted();
 
-				var args = new PointerRoutedEventArgs(touches, evt, this);
 				var isHandledOrBubblingInManaged = default(bool);
+				foreach (UITouch touch in touches)
+				{
+					var id = NativePointerId.Get(this, touch);
+					var args = new PointerRoutedEventArgs(id.Value, touch, evt, this);
 
-				isHandledOrBubblingInManaged |= OnNativePointerEnter(args);
-				isHandledOrBubblingInManaged |= OnNativePointerDown(args);
+					isHandledOrBubblingInManaged |= OnNativePointerEnter(args);
+					isHandledOrBubblingInManaged |= OnNativePointerDown(args);
+				}
 
 				/*
 				 * **** WARNING ****
@@ -86,12 +139,17 @@ namespace Windows.UI.Xaml
 		{
 			try
 			{
-				var args = new PointerRoutedEventArgs(touches, evt, this);
-				var isPointerOver = evt.IsTouchInView(this);
+				var isHandledOrBubblingInManaged = default(bool);
+				foreach (UITouch touch in touches)
+				{
+					var id = NativePointerId.Get(this, touch);
+					var args = new PointerRoutedEventArgs(id.Value, touch, evt, this);
+					var isPointerOver = touch.IsTouchInView(this);
 
-				// As we don't have enter/exit equivalents on iOS, we have to update the IsOver on each move
-				// Note: Entered / Exited are raised *before* the Move (Checked using the args timestamp)
-				var isHandledOrBubblingInManaged = OnNativePointerMoveWithOverCheck(args, isPointerOver);
+					// As we don't have enter/exit equivalents on iOS, we have to update the IsOver on each move
+					// Note: Entered / Exited are raised *before* the Move (Checked using the args timestamp)
+					isHandledOrBubblingInManaged |= OnNativePointerMoveWithOverCheck(args, isPointerOver);
+				}
 
 				if (!isHandledOrBubblingInManaged)
 				{
@@ -109,11 +167,17 @@ namespace Windows.UI.Xaml
 		{
 			try
 			{
-				var args = new PointerRoutedEventArgs(touches, evt, this);
 				var isHandledOrBubblingInManaged = default(bool);
+				foreach (UITouch touch in touches)
+				{
+					var id = NativePointerId.Get(this, touch);
+					var args = new PointerRoutedEventArgs(id.Value, touch, evt, this);
 
-				isHandledOrBubblingInManaged |= OnNativePointerUp(args);
-				isHandledOrBubblingInManaged |= OnNativePointerExited(args);
+					isHandledOrBubblingInManaged |= OnNativePointerUp(args);
+					isHandledOrBubblingInManaged |= OnNativePointerExited(args);
+
+					id.Release(this);
+				}
 
 				if (!isHandledOrBubblingInManaged)
 				{
@@ -133,15 +197,21 @@ namespace Windows.UI.Xaml
 		{
 			try
 			{
-				var args = new PointerRoutedEventArgs(touches, evt, this);
 				var isHandledOrBubblingInManaged = default(bool);
+				foreach (UITouch touch in touches)
+				{
+					var id = NativePointerId.Get(this, touch);
+					var args = new PointerRoutedEventArgs(id.Value, touch, evt, this);
 
-				// Note: We should have raise either PointerCaptureLost or PointerCancelled here depending of the reason which
-				//		 drives the system to bubble a lost. However we don't have this kind of information on iOS, and it's
-				//		 usually due to the ScrollView which kicks in. So we always raise the CaptureLost which is the behavior
-				//		 on UWP when scroll starts (even if no capture are actives at this time).
+					// Note: We should have raise either PointerCaptureLost or PointerCancelled here depending of the reason which
+					//		 drives the system to bubble a lost. However we don't have this kind of information on iOS, and it's
+					//		 usually due to the ScrollView which kicks in. So we always raise the CaptureLost which is the behavior
+					//		 on UWP when scroll starts (even if no capture are actives at this time).
 
-				isHandledOrBubblingInManaged |= OnNativePointerCancel(args, isSwallowedBySystem: true);
+					isHandledOrBubblingInManaged |= OnNativePointerCancel(args, isSwallowedBySystem: true);
+
+					id.Release(this);
+				}
 
 				if (!isHandledOrBubblingInManaged)
 				{
@@ -256,7 +326,7 @@ namespace Windows.UI.Xaml
 			{
 				switch (view)
 				{
-					case ScrollContentPresenter presenter:
+					case NativeScrollContentPresenter presenter:
 						manager = presenter.TouchesManager;
 						return true;
 
@@ -403,9 +473,9 @@ namespace Windows.UI.Xaml
 		#endregion
 
 		#region Capture
-		// Pointer capture is not supported on iOS
+		// Pointer capture is not needed on iOS, otherwise we could use ExclusiveTouch = true;
 		// partial void CapturePointerNative(Pointer pointer);
-		// partial void ReleasePointerCaptureNative(Pointer pointer);
+		// partial void ReleasePointerNative(Pointer pointer);
 		#endregion
 	}
 }

@@ -86,7 +86,7 @@ namespace Uno.UI.SourceGenerators.TSBindings
 
 					foreach (var field in messageType.GetFields())
 					{
-						sb.AppendLineInvariant($"{field.Name} : {GetTSFieldType(field.Type)};");
+						sb.AppendLineInvariant($"public {field.Name} : {GetTSFieldType(field.Type)};");
 					}
 
 					if (messageType.Name.EndsWith("Params"))
@@ -102,7 +102,15 @@ namespace Uno.UI.SourceGenerators.TSBindings
 
 				var outputPath = Path.Combine(_bindingsPaths, $"{messageType.Name}.ts");
 
-				File.WriteAllText(outputPath, sb.ToString());
+				var fileExists = File.Exists(outputPath);
+				var output = sb.ToString();
+
+				if (
+					(fileExists && File.ReadAllText(outputPath) != output)
+					|| !fileExists)
+				{
+					File.WriteAllText(outputPath, output);
+				}
 			}
 		}
 
@@ -174,7 +182,7 @@ namespace Uno.UI.SourceGenerators.TSBindings
 				foreach (var field in parametersType.GetFields())
 				{
 					var fieldSize = GetNativeFieldSize(field);
-					bool isStringField = field.Type == _stringSymbol;
+					bool isStringField = Equals(field.Type, _stringSymbol);
 
 					if (field.Type is IArrayTypeSymbol arraySymbol)
 					{
@@ -188,8 +196,8 @@ namespace Uno.UI.SourceGenerators.TSBindings
 						{
 							using (sb.BlockInvariant(""))
 							{
-								sb.AppendLineInvariant($"var stringLength = lengthBytesUTF8({value});");
-								sb.AppendLineInvariant($"var pString = Module._malloc(stringLength + 1);");
+								sb.AppendLineInvariant($"const stringLength = lengthBytesUTF8({value});");
+								sb.AppendLineInvariant($"const pString = Module._malloc(stringLength + 1);");
 								sb.AppendLineInvariant($"stringToUTF8({value}, pString, stringLength + 1);");
 
 								sb.AppendLineInvariant(
@@ -220,7 +228,7 @@ namespace Uno.UI.SourceGenerators.TSBindings
 		{
 			using (sb.BlockInvariant($"public static unmarshal(pData:number) : {parametersType.Name}"))
 			{
-				sb.AppendLineInvariant($"let ret = new {parametersType.Name}();");
+				sb.AppendLineInvariant($"const ret = new {parametersType.Name}();");
 
 				var fieldOffset = 0;
 				foreach (var field in parametersType.GetFields())
@@ -237,12 +245,12 @@ namespace Uno.UI.SourceGenerators.TSBindings
 
 						var elementType = arraySymbol.ElementType;
 						var elementTSType = GetTSType(elementType);
-						var isElementString = elementType == _stringSymbol;
+						var isElementString = Equals(elementType, _stringSymbol);
 						var elementSize = isElementString ? 4 : fieldSize;
 
 						using (sb.BlockInvariant(""))
 						{
-							sb.AppendLineInvariant($"var pArray = Module.getValue(pData + {fieldOffset}, \"*\");");
+							sb.AppendLineInvariant($"const pArray = Module.getValue(pData + {fieldOffset}, \"*\");");
 
 							using (sb.BlockInvariant("if(pArray !== 0)"))
 							{
@@ -250,7 +258,7 @@ namespace Uno.UI.SourceGenerators.TSBindings
 
 								using (sb.BlockInvariant($"for(var i=0; i<ret.{field.Name}_Length; i++)"))
 								{
-									sb.AppendLineInvariant($"var value = Module.getValue(pArray + i * {elementSize}, \"{GetEMField(field.Type)}\");");
+									sb.AppendLineInvariant($"const value = Module.getValue(pArray + i * {elementSize}, \"{GetEMField(field.Type)}\");");
 
 									if (isElementString)
 									{
@@ -281,9 +289,9 @@ namespace Uno.UI.SourceGenerators.TSBindings
 					{
 						using (sb.BlockInvariant(""))
 						{
-							if(field.Type == _stringSymbol)
+							if(Equals(field.Type, _stringSymbol))
 							{
-								sb.AppendLineInvariant($"var ptr = Module.getValue(pData + {fieldOffset}, \"{GetEMField(field.Type)}\");");
+								sb.AppendLineInvariant($"const ptr = Module.getValue(pData + {fieldOffset}, \"{GetEMField(field.Type)}\");");
 
 								using (sb.BlockInvariant("if(ptr !== 0)"))
 								{
@@ -318,17 +326,17 @@ namespace Uno.UI.SourceGenerators.TSBindings
 		private int GetNativeFieldSize(IFieldSymbol field)
 		{
 			if(
-				field.Type == _stringSymbol
-				|| field.Type == _intSymbol
-				|| field.Type == _intPtrSymbol
-				|| field.Type == _floatSymbol
-				|| field.Type == _boolSymbol
+				Equals(field.Type, _stringSymbol)
+				|| Equals(field.Type, _intSymbol)
+				|| Equals(field.Type, _intPtrSymbol)
+				|| Equals(field.Type, _floatSymbol)
+				|| Equals(field.Type, _boolSymbol)
 				|| field.Type is IArrayTypeSymbol
 			)
 			{
 				return 4;
 			}
-			else if(field.Type == _doubleSymbol)
+			else if(Equals(field.Type, _doubleSymbol))
 			{
 				return 8;
 			}
@@ -341,37 +349,37 @@ namespace Uno.UI.SourceGenerators.TSBindings
 		private static string GetEMField(ITypeSymbol fieldType)
 		{
 			if (
-				fieldType == _stringSymbol
-				|| fieldType == _intPtrSymbol
+				Equals(fieldType, _stringSymbol)
+				|| Equals(fieldType, _intPtrSymbol)
 				|| fieldType is IArrayTypeSymbol
 			)
 			{
 				return "*";
 			}
 			else if (
-				fieldType == _intSymbol
-				|| fieldType == _boolSymbol
+				Equals(fieldType, _intSymbol)
+				|| Equals(fieldType, _boolSymbol)
 			)
 			{
 				return "i32";
 			}
-			else if (fieldType == _longSymbol)
+			else if (Equals(fieldType, _longSymbol))
 			{
 				return "i64";
 			}
-			else if (fieldType == _shortSymbol)
+			else if (Equals(fieldType, _shortSymbol))
 			{
 				return "i16";
 			}
-			else if (fieldType == _byteSymbol)
+			else if (Equals(fieldType, _byteSymbol))
 			{
 				return "i8";
 			}
-			else if (fieldType == _floatSymbol)
+			else if (Equals(fieldType, _floatSymbol))
 			{
 				return "float";
 			}
-			else if (fieldType == _doubleSymbol)
+			else if (Equals(fieldType, _doubleSymbol))
 			{
 				return "double";
 			}
@@ -392,22 +400,22 @@ namespace Uno.UI.SourceGenerators.TSBindings
 			{
 				return $"Array<{GetTSType(array.ElementType)}>";
 			}
-			else if (type == _stringSymbol)
+			else if (Equals(type, _stringSymbol))
 			{
 				return "String";
 			}
 			else if (
-				type == _intSymbol
-				|| type == _floatSymbol
-				|| type == _doubleSymbol
-				|| type == _byteSymbol
-				|| type == _shortSymbol
-				|| type == _intPtrSymbol
+				Equals(type, _intSymbol)
+				|| Equals(type, _floatSymbol)
+				|| Equals(type, _doubleSymbol)
+				|| Equals(type, _byteSymbol)
+				|| Equals(type, _shortSymbol)
+				|| Equals(type, _intPtrSymbol)
 			)
 			{
 				return "Number";
 			}
-			else if (type == _boolSymbol)
+			else if (Equals(type, _boolSymbol))
 			{
 				return "Boolean";
 			}
@@ -428,22 +436,22 @@ namespace Uno.UI.SourceGenerators.TSBindings
 			{
 				return $"Array<{GetTSFieldType(array.ElementType)}>";
 			}
-			else if (type == _stringSymbol)
+			else if (Equals(type, _stringSymbol))
 			{
 				return "string";
 			}
 			else if (
-				type == _intSymbol
-				|| type == _floatSymbol
-				|| type == _doubleSymbol
-				|| type == _byteSymbol
-				|| type == _shortSymbol
-				|| type == _intPtrSymbol
+				Equals(type, _intSymbol)
+				|| Equals(type, _floatSymbol)
+				|| Equals(type, _doubleSymbol)
+				|| Equals(type, _byteSymbol)
+				|| Equals(type, _shortSymbol)
+				|| Equals(type, _intPtrSymbol)
 			)
 			{
 				return "number";
 			}
-			else if (type == _boolSymbol)
+			else if (Equals(type, _boolSymbol))
 			{
 				return "boolean";
 			}

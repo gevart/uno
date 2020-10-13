@@ -40,11 +40,16 @@ namespace Windows.UI.Xaml.Controls
 		private void UpdateBorder()
 		{
 			SetBorder(BorderThickness, BorderBrush, CornerRadius);
+			SetAndObserveBackgroundBrush(Background);
 		}
 
 		partial void OnPaddingChangedPartial(Thickness oldValue, Thickness newValue)
 		{
 			UpdateBorder();
 		}
+
+		bool ICustomClippingElement.AllowClippingToLayoutSlot => true;
+
+		bool ICustomClippingElement.ForceClippingToLayoutSlot => CornerRadius != CornerRadius.None;
 	}
 }

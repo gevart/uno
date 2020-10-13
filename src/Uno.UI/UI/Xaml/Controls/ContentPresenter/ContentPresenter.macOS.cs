@@ -29,7 +29,7 @@ namespace Windows.UI.Xaml.Controls
 		private void SetUpdateTemplate()
 		{
 			UpdateContentTemplateRoot();
-			this.SetNeedsLayout();
+			this.InvalidateMeasure();
 		}
 
 		partial void RegisterContentTemplateRoot()
@@ -73,5 +73,9 @@ namespace Windows.UI.Xaml.Controls
 				);
 			}
 		}
+
+		bool ICustomClippingElement.AllowClippingToLayoutSlot => CornerRadius == CornerRadius.None;
+
+		bool ICustomClippingElement.ForceClippingToLayoutSlot => false;
 	}
 }

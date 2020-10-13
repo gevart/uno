@@ -18,7 +18,7 @@ using CoreAnimation;
 
 namespace Windows.UI.Xaml.Controls
 {
-	public abstract partial class Layouter
+	abstract partial class Layouter
 	{
 		public IEnumerable<View> GetChildren()
 		{
@@ -68,7 +68,7 @@ namespace Windows.UI.Xaml.Controls
 		protected Size MeasureChildOverride(View view, Size slotSize)
 		{
 			var ret = view
-				.Measure(slotSize.LogicalToPhysicalPixels())
+				.SizeThatFits(slotSize.LogicalToPhysicalPixels())
 				.PhysicalToLogicalPixels()
 				.ToFoundationSize();
 
@@ -139,9 +139,9 @@ namespace Windows.UI.Xaml.Controls
 				return null;
 			}
 
-			if (view.Layer.Transform.IsIdentity)
+			if (view.Layer?.Transform.IsIdentity ?? true)
 			{
-				// Transform is identity anyway
+				// Transform is identity anyway, or Layer is null
 				return null;
 			}
 

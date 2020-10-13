@@ -34,6 +34,25 @@ namespace Microsoft.CodeAnalysis
 			} while (symbol.SpecialType != SpecialType.System_Object);
 		}
 
+		public static IEnumerable<ISymbol> GetAllMembers(this ITypeSymbol symbol)
+		{
+			do
+			{
+				foreach (var member in symbol.GetMembers())
+				{
+					yield return member;
+				}
+
+				symbol = symbol.BaseType;
+
+				if (symbol == null)
+				{
+					break;
+				}
+
+			} while (symbol.SpecialType != SpecialType.System_Object);
+		}
+
 		public static IEnumerable<IEventSymbol> GetEvents(INamedTypeSymbol symbol) => symbol.GetMembers().OfType<IEventSymbol>();
 
 		/// <summary>
@@ -71,7 +90,7 @@ namespace Microsoft.CodeAnalysis
 		{
 			do
 			{
-				if (symbol == other)
+				if (Equals(symbol, other))
 				{
 					return true;
 				}
@@ -99,7 +118,7 @@ namespace Microsoft.CodeAnalysis
 			symbol.DeclaredAccessibility == Accessibility.Public
 			||
 			(
-				symbol.Locations.Any(l => l.MetadataModule == currentSymbol)
+				symbol.Locations.Any(l => Equals(l.MetadataModule, currentSymbol))
 				&& symbol.DeclaredAccessibility == Accessibility.Internal
 			);
 
@@ -147,12 +166,12 @@ namespace Microsoft.CodeAnalysis
 
 		public static AttributeData FindAttribute(this ISymbol property, INamedTypeSymbol attributeClassSymbol)
 		{
-			return property.GetAttributes().FirstOrDefault(a => a.AttributeClass == attributeClassSymbol);
+			return property.GetAttributes().FirstOrDefault(a => Equals(a.AttributeClass, attributeClassSymbol));
 		}
 
 		public static AttributeData FindAttributeFlattened(this ISymbol property, INamedTypeSymbol attributeClassSymbol)
 		{
-			return property.GetAllAttributes().FirstOrDefault(a => a.AttributeClass == attributeClassSymbol);
+			return property.GetAllAttributes().FirstOrDefault(a => Equals(a.AttributeClass, attributeClassSymbol));
 		}
 
 		/// <summary>
@@ -379,6 +398,11 @@ namespace Microsoft.CodeAnalysis
 			}
 
 			throw new ArgumentOutOfRangeException($"{symbol.DeclaredAccessibility} is not supported.");
+		}
+
+		public static IFieldSymbol FindField(this INamedTypeSymbol symbol, INamedTypeSymbol fieldType, string fieldName, StringComparison comparison = default)
+		{
+			return symbol.GetFields().FirstOrDefault(x => Equals(x.Type, fieldType) && x.Name.Equals(fieldName, comparison));
 		}
 	}
 }

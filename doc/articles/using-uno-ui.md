@@ -1,8 +1,8 @@
-# Developing with Uno.UI
+﻿# Developing with Uno.UI
 
 ## Pre-requisites
 
-* [**Visual Studio 2017 15.5 or later**](https://visualstudio.microsoft.com/), with :
+* [**Visual Studio 2019 16.3 or later**](https://visualstudio.microsoft.com/), with :
 	* Xamarin component, with the iOS Remote Simulator installed
 	* A working Mac with Visual Studio for Mac, XCode 8.2 or later installed
 	* The google Android x86 emulators
@@ -142,6 +142,11 @@ For the following control class:
 ```csharp
     public class MyUserControl : Control  
     {  
+        public MyUserControl()
+        {
+            InitializeComponent();
+        }
+        
         public string MyCustomContent  
         {  
             get { return (string)GetValue(MyCustomContentProperty); }  
@@ -204,7 +209,11 @@ For many controls in Uno, two prepackaged styles are provided:
 * NativeDefault[Control] which is customized to match the UI guidelines of the target platform.
 * XamlDefault[Control] which is the default style of controls on Windows.
 
-On WASM, the NativeDefault[Control] styles are currently only aliases to the XamlDefault[Control], for compatibility with other platforms.
+An application can set native styles as the default for supported controls by setting the static flag `Uno.UI.FeatureConfiguration.Style.UseUWPDefaultStyles = false;` somewhere in app code (eg, the `App.xaml.cs` constructor). It's also possible to configure only certain controls to default to the native style, in the following manner: `Uno.UI.FeatureConfiguration.Style.UseUWPDefaultStylesOverride[typeof(Frame)] = false;`
+
+Third-party libraries can define native variants of default styles for custom controls, using the `xamarin:IsNativeStyle="True"` tag in Xaml. These will be used if the consuming application is configured to use native styles.
+
+On WASM, the NativeDefault[Control] styles are currently only aliases to the XamlDefault[Control], for code compatibility with other platforms.
 
 ## Localization
 
@@ -343,97 +352,7 @@ For more information, see the [TextBlock](https://msdn.microsoft.com/en-us/libra
 
 ### Custom Fonts
 
-#### Custom Fonts on Android
-Fonts must be placed in the `Assets` folder of the head project, matching the path of the fonts in Windows, and marked as `AndroidAsset`.
-The format is the same as Windows, as follows:
-
-```xml
-<Setter Property="FontFamily" Value="/Assets/Fonts/Roboto-Regular.ttf#Roboto" />
-```
-   or
-   
-```xml
-<Setter Property="FontFamily" Value="ms-appx:///Assets/Fonts/Roboto-Regular.ttf#Roboto" />
-```
-
-#### Custom Fonts on iOS
-Fonts must be placed in the `Resources` folder of the head project, be marked as
-`BundleResource` for the build type.
-
-Each custom font **must** then be specified in the `info.plist` file as follows:
-
-```xml
-<key>UIAppFonts</key>
-<array>
-    <string>yourfont01.ttf</string>
-    <string>yourfonr02.ttf</string>
-    <string>yourfonr03.ttf</string>
-</array>
-```
-
-The format is the same as Windows, as follows:
-
-```xml
-<Setter Property="FontFamily" Value="/Assets/Fonts/yourfont01.ttf#Roboto" />
-```
-    or
-
-```xml
-<Setter Property="FontFamily" Value="ms-appx:///Assets/Fonts/yourfont01.ttf#Roboto" />
-```
-
-#### Custom fonts on WebAssembly
-Adding a custom font is done through the use of WebFonts, using a data-URI:
-
-```css
-@font-face {
-  font-family: "Symbols";
-  /* winjs-symbols.woff2: https://github.com/Microsoft/fonts/tree/master/Symbols */
-  src: url(data:application/x-font-woff;charset=utf-8;base64,d09GMgABAAA...) format('woff');
-}
-```
-
-This type of declaration is required to avoid measuring errors if the font requested by a `TextBlock` or a `FontIcon` needs to be downloaded first. Specifying it using a data-URI ensures the font is readily available.
-
-#### Custom Fonts Notes
-Please note that some custom fonts need the FontFamily and FontWeight properties to be set at the same time in order to work properly on TextBlocks, Runs and for styles Setters.
-If that's your case, here are some examples of code:
-
-```xml
-<FontFamily x:Key="FontFamilyLight">ms-appx:///Assets/Fonts/PierSans-Light.otf#Pier Sans Light</FontFamily>
-<FontFamily x:Key="FontFamilyBold">ms-appx:///Assets/Fonts/PierSans-Bold.otf#Pier Sans Bold</FontFamily>
-
-<Style x:Key="LightTextBlockStyle"
-	   TargetType="TextBlock">
-	<Setter Property="FontFamily"
-			Value="{StaticResource FontFamilyLight}" />
-	<Setter Property="FontWeight"
-			Value="Light" />
-	<Setter Property="FontSize"
-			Value="16" />
-</Style>
-
-<Style x:Key="BoldTextBlockStyle"
-	   TargetType="TextBlock">
-	<Setter Property="FontFamily"
-			Value="{StaticResource FontFamilyBold}" />
-	<Setter Property="FontWeight"
-			Value="Bold" />
-	<Setter Property="FontSize"
-			Value="24" />
-</Style>
-
-<TextBlock Text="TextBlock with Light FontFamily and FontWeight."
-		   FontFamily="{StaticResource FontFamilyLight}"
-		   FontWeight="Light" />
-
-<TextBlock Style="{StaticResource BoldTextBlockStyle}">
-	<Run Text="TextBlock with Runs" />
-	<Run Text="and  Light FontFamily and FontWeight for the second Run."
-		 FontWeight="Light"
-		 FontFamily="{StaticResource FontFamilyLight}" />
-</TextBlock>
-```
+For more information, see the [Custom fonts documentation](features/custom-fonts.md).
 
 ### TextBox
 

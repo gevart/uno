@@ -11,14 +11,8 @@ using Windows.UI.Xaml.Controls.Primitives;
 using Windows.UI.Xaml.Media;
 #if XAMARIN_IOS
 using UIKit;
-using View = UIKit.UIView;
 #elif __MACOS__
 using AppKit;
-using View = AppKit.NSView;
-#elif __ANDROID__
-using View = Android.Views.View;
-#elif NET461 || __WASM__
-using View = Windows.UI.Xaml.UIElement;
 #endif
 
 namespace Windows.UI.Xaml.Controls
@@ -133,7 +127,14 @@ namespace Windows.UI.Xaml.Controls
 				visibleBounds.Width = Math.Min(finalSize.Width, visibleBounds.Width);
 				visibleBounds.Height = Math.Min(finalSize.Height, visibleBounds.Height);
 
-				Popup.CustomLayouter.Arrange(finalSize, visibleBounds, _lastMeasuredSize);
+				Popup.CustomLayouter.Arrange(
+					finalSize,
+					visibleBounds,
+					_lastMeasuredSize
+#if __ANDROID__
+					, visibleBounds.Location
+#endif
+				);
 
 				if (this.Log().IsEnabled(LogLevel.Debug))
 				{

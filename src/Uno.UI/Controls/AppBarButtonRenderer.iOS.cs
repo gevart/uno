@@ -1,5 +1,4 @@
-﻿#if __IOS__
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -139,11 +138,10 @@ namespace Uno.UI.Controls
 			Native.AccessibilityLabel = Element.Label;
 
 			// Foreground
-			if (Element.Foreground is SolidColorBrush foreground)
+			if (Brush.TryGetColorWithOpacity(Element.Foreground, out var foreground))
 			{
-				var color = (UIColor)foreground.Color as UIColor;
-				var alpha = (nfloat)(foreground.Opacity * Element.Opacity);
-				Native.TintColor = color.ColorWithAlpha(alpha);
+				var color = (UIColor)foreground;
+				Native.TintColor = color.ColorWithAlpha((nfloat)Element.Opacity);
 			}
 			else
 			{
@@ -154,8 +152,7 @@ namespace Uno.UI.Controls
 			Native.Enabled = Element.IsEnabled;
 
 			// Background
-			var backgroundColor = (Element.Background as SolidColorBrush)?.ColorWithOpacity;
-			if (backgroundColor != null)
+			if (Brush.TryGetColorWithOpacity(Element.Background, out var backgroundColor))
 			{
 				if (HasContent)
 				{
@@ -164,8 +161,7 @@ namespace Uno.UI.Controls
 				}
 				else
 				{
-					var isTransparent = backgroundColor.Value.A == 0;
-					var backgroundImage = isTransparent
+					var backgroundImage = backgroundColor.IsTransparent
 						? new UIImage() // Clears the background
 						: ((UIColor)backgroundColor).ToUIImage(); // Applies the solid color;
 
@@ -212,4 +208,3 @@ namespace Uno.UI.Controls
 		}
 	}
 }
-#endif

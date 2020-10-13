@@ -12,6 +12,7 @@ using Uno.UI;
 using Uno.Disposables;
 using Windows.UI.Xaml.Data;
 using Uno.UI.DataBinding;
+using Windows.Foundation.Collections;
 
 namespace Windows.UI.Xaml.Controls.Primitives
 {
@@ -21,25 +22,31 @@ namespace Windows.UI.Xaml.Controls.Primitives
 
 		private readonly SerialDisposable _collectionViewSubscription = new SerialDisposable();
 		private BindingPath _path;
+		private bool _disableRaiseSelectionChanged;
 
 		/// <summary>
 		/// This is always true for <see cref="FlipView"/> and <see cref="ComboBox"/>, and depends on the value of <see cref="ListViewBase.SelectionMode"/> for <see cref="ListViewBase"/>.
 		/// </summary>
 		internal virtual bool IsSingleSelection => true;
 
+		/// <summary>
+		/// Templates for which it's known that the template root doesn't qualify as a container.
+		/// </summary>
+		private readonly HashSet<DataTemplate> _itemTemplatesThatArentContainers = new HashSet<DataTemplate>();
+
 		public Selector()
 		{
 
 		}
 
-		public static readonly DependencyProperty SelectedItemProperty =
+		public static DependencyProperty SelectedItemProperty { get; } =
 		DependencyProperty.Register(
 			"SelectedItem",
 			typeof(object),
 			typeof(Selector),
-			new PropertyMetadata(
+			new FrameworkPropertyMetadata(
 				defaultValue: null,
-				propertyChangedCallback: (s, e) => (s as Selector).OnSelectedItemChanged(e.OldValue, e.NewValue)
+				propertyChangedCallback: (s, e) => (s as Selector).OnSelectedItemChanged(e.OldValue, e.NewValue, updateItemSelectedState: true)
 			)
 		);
 
@@ -49,11 +56,30 @@ namespace Windows.UI.Xaml.Controls.Primitives
 			set => this.SetValue(SelectedItemProperty, value);
 		}
 
-		internal virtual void OnSelectedItemChanged(object oldSelectedItem, object selectedItem)
+		internal void OnSelectorItemIsSelectedChanged(SelectorItem container, bool oldIsSelected, bool newIsSelected)
+		{
+			var item = ItemFromContainer(container);
+
+			ChangeSelectedItem(item, oldIsSelected, newIsSelected);
+		}
+
+		internal virtual void ChangeSelectedItem(object item, bool oldIsSelected, bool newIsSelected) {
+			if (ReferenceEquals(SelectedItem, item) && !newIsSelected)
+			{
+				SelectedItem = null;
+			}
+			else if (!ReferenceEquals(SelectedItem, item) && newIsSelected)
+			{
+				SelectedItem = item;
+			}
+		}
+
+		internal virtual void OnSelectedItemChanged(object oldSelectedItem, object selectedItem, bool updateItemSelectedState)
 		{
 			var wasSelectionUnset = oldSelectedItem == null && (!GetItems()?.Contains(null) ?? false);
 			var isSelectionUnset = false;
-			if (!GetItems()?.Contains(selectedItem) ?? false)
+			var items = GetItems();
+			if (!items?.Contains(selectedItem) ?? false)
 			{
 				if (selectedItem == null)
 				{
@@ -61,8 +87,24 @@ namespace Windows.UI.Xaml.Controls.Primitives
 				}
 				else
 				{
-					//Prevent SelectedItem being set to an invalid value
-					SelectedItem = oldSelectedItem;
+					var selectionToReset = items?.Contains(oldSelectedItem) ?? false ?
+						oldSelectedItem
+						// Note: in this scenario (previous SelectedItem no longer in collection either), Windows still leaves it at the
+						// previous value. We don't try to reproduce this behaviour, amongst other reasons because under Uno's DP system
+						// this would push an invalid value back through any 2-way binding.
+						: null;
+					try
+					{
+						_disableRaiseSelectionChanged = true;
+
+						//Prevent SelectedItem being set to an invalid value
+						SelectedItem = selectionToReset;
+					}
+					finally
+					{
+						_disableRaiseSelectionChanged = false;
+					}
+
 					return;
 				}
 			}
@@ -81,19 +123,44 @@ namespace Windows.UI.Xaml.Controls.Primitives
 				SelectedIndex = newIndex;
 			}
 
-			InvokeSelectionChanged(wasSelectionUnset ? new object[] { } : new[] { oldSelectedItem },
-				isSelectionUnset ? new object[] { } : new[] { selectedItem }
-			);
 			OnSelectedItemChangedPartial(oldSelectedItem, selectedItem);
 
 			UpdateSelectedValue();
+
+			if (updateItemSelectedState)
+			{
+				TryUpdateSelectorItemIsSelected(oldSelectedItem, false);
+				TryUpdateSelectorItemIsSelected(selectedItem, true);
+			}
+
+			InvokeSelectionChanged(wasSelectionUnset ? new object[] { } : new[] { oldSelectedItem },
+				isSelectionUnset ? new object[] { } : new[] { selectedItem }
+			);
+		}
+
+		internal void TryUpdateSelectorItemIsSelected(object item, bool isSelected)
+		{
+			if (item is SelectorItem si)
+			{
+				si.IsSelected = isSelected;
+			}
+			else if (ContainerFromItem(item) is SelectorItem si2)
+			{
+				si2.IsSelected = isSelected;
+			}
+		}
+
+		internal bool DisableRaiseSelectionChanged
+		{
+			get => _disableRaiseSelectionChanged;
+			set => _disableRaiseSelectionChanged = value;
 		}
 
 		private void UpdateSelectedValue()
 		{
 			if (SelectedValuePath.HasValue())
 			{
-				if(_path?.Path != SelectedValuePath)
+				if (_path?.Path != SelectedValuePath)
 				{
 					_path = new Uno.UI.DataBinding.BindingPath(SelectedValuePath, null);
 				}
@@ -102,6 +169,7 @@ namespace Windows.UI.Xaml.Controls.Primitives
 			{
 				_path = null;
 			}
+
 
 			if (_path != null)
 			{
@@ -119,7 +187,10 @@ namespace Windows.UI.Xaml.Controls.Primitives
 
 		internal void InvokeSelectionChanged(object[] removedItems, object[] addedItems)
 		{
-			SelectionChanged?.Invoke(this, new SelectionChangedEventArgs(this, removedItems, addedItems));
+			if (!_disableRaiseSelectionChanged)
+			{
+				SelectionChanged?.Invoke(this, new SelectionChangedEventArgs(this, removedItems, addedItems));
+			}
 		}
 
 		public int SelectedIndex
@@ -129,13 +200,13 @@ namespace Windows.UI.Xaml.Controls.Primitives
 		}
 
 		// Using a DependencyProperty as the backing store for SelectedIndex.  This enables animation, styling, binding, etc...
-		public static readonly DependencyProperty SelectedIndexProperty =
-			DependencyProperty.Register("SelectedIndex", typeof(int), typeof(Selector), new PropertyMetadata(-1,
+		public static DependencyProperty SelectedIndexProperty { get ; } =
+			DependencyProperty.Register("SelectedIndex", typeof(int), typeof(Selector), new FrameworkPropertyMetadata(-1,
 				(s, e) => (s as Selector).OnSelectedIndexChanged((int)e.OldValue, (int)e.NewValue)
 			)
 		);
 
-		private void OnSelectedIndexChanged(int oldSelectedIndex, int newSelectedIndex)
+		internal virtual void OnSelectedIndexChanged(int oldSelectedIndex, int newSelectedIndex)
 		{
 			var newSelectedItem = ItemFromIndex(newSelectedIndex);
 
@@ -217,7 +288,7 @@ namespace Windows.UI.Xaml.Controls.Primitives
 
 		private void IsSynchronizedWithCurrentItemChanged(bool? oldValue, bool? newValue)
 		{
-			if(newValue == true)
+			if (newValue == true)
 			{
 				throw new ArgumentOutOfRangeException("True is not a supported value for this property");
 			}
@@ -226,14 +297,15 @@ namespace Windows.UI.Xaml.Controls.Primitives
 		}
 
 		/// <summary>
-		/// The selected index as an <see cref="IndexPath"/> of (group, group position), where group=0 if the source is ungrouped.
+		/// The selected index as an <see cref="Uno.UI.IndexPath"/> of (group, group position), where group=0 if the source is ungrouped.
 		/// </summary>
-		private IndexPath? SelectedIndexPath { get; set; }
+		private Uno.UI.IndexPath? SelectedIndexPath { get; set; }
 
 		protected override void OnItemsSourceChanged(DependencyPropertyChangedEventArgs e)
 		{
 			base.OnItemsSourceChanged(e);
 			TrySubscribeToCurrentChanged();
+			Refresh();
 		}
 
 		private void TrySubscribeToCurrentChanged()
@@ -292,7 +364,7 @@ namespace Windows.UI.Xaml.Controls.Primitives
 				case NotifyCollectionChangedAction.Add:
 
 					//Advance SelectedIndex if items are being inserted before it
-					var newIndex = GetIndexFromIndexPath(IndexPath.FromRowSection(c.NewStartingIndex, section));
+					var newIndex = GetIndexFromIndexPath(Uno.UI.IndexPath.FromRowSection(c.NewStartingIndex, section));
 					if (selectedIndexToSet >= newIndex)
 					{
 						selectedIndexToSet += c.NewItems.Count;
@@ -301,7 +373,7 @@ namespace Windows.UI.Xaml.Controls.Primitives
 					break;
 				case NotifyCollectionChangedAction.Remove:
 					{
-						var oldIndex = GetIndexFromIndexPath(IndexPath.FromRowSection(c.OldStartingIndex, section));
+						var oldIndex = GetIndexFromIndexPath(Uno.UI.IndexPath.FromRowSection(c.OldStartingIndex, section));
 						if (selectedIndexToSet >= oldIndex && selectedIndexToSet < oldIndex + c.OldItems.Count)
 						{
 							//Deset if selected item is being removed
@@ -317,7 +389,7 @@ namespace Windows.UI.Xaml.Controls.Primitives
 					break;
 				case NotifyCollectionChangedAction.Replace:
 					{
-						var oldIndex = GetIndexFromIndexPath(IndexPath.FromRowSection(c.OldStartingIndex, section));
+						var oldIndex = GetIndexFromIndexPath(Uno.UI.IndexPath.FromRowSection(c.OldStartingIndex, section));
 						if (selectedIndexToSet >= oldIndex && selectedIndexToSet < oldIndex + c.OldItems.Count)
 						{
 							//Deset if selected item is being replaced
@@ -348,7 +420,7 @@ namespace Windows.UI.Xaml.Controls.Primitives
 			switch (c.Action)
 			{
 				case NotifyCollectionChangedAction.Add:
-					var newIndexPath = IndexPath.FromRowSection(row: 0, section: c.NewStartingIndex);
+					var newIndexPath = Uno.UI.IndexPath.FromRowSection(row: 0, section: c.NewStartingIndex);
 					if (selectedIndexPath >= newIndexPath)
 					{
 						//Advance SelectedIndex if groups are being inserted before it
@@ -362,8 +434,8 @@ namespace Windows.UI.Xaml.Controls.Primitives
 					break;
 				case NotifyCollectionChangedAction.Remove:
 					{
-						var oldIndexPath = IndexPath.FromRowSection(row: 0, section: c.OldStartingIndex);
-						var oldIndexPathLast = IndexPath.FromRowSection(row: int.MaxValue, section: c.OldStartingIndex + c.OldItems.Count);
+						var oldIndexPath = Uno.UI.IndexPath.FromRowSection(row: 0, section: c.OldStartingIndex);
+						var oldIndexPathLast = Uno.UI.IndexPath.FromRowSection(row: int.MaxValue, section: c.OldStartingIndex + c.OldItems.Count);
 						if (selectedIndexPath >= oldIndexPath && selectedIndexPath < oldIndexPathLast)
 						{
 							//Deset if selected item is in group being removed
@@ -383,8 +455,8 @@ namespace Windows.UI.Xaml.Controls.Primitives
 					break;
 				case NotifyCollectionChangedAction.Replace:
 					{
-						var oldIndexPath = IndexPath.FromRowSection(row: 0, section: c.OldStartingIndex);
-						var oldIndexPathLast = IndexPath.FromRowSection(row: int.MaxValue, section: c.OldStartingIndex + c.OldItems.Count);
+						var oldIndexPath = Uno.UI.IndexPath.FromRowSection(row: 0, section: c.OldStartingIndex);
+						var oldIndexPathLast = Uno.UI.IndexPath.FromRowSection(row: int.MaxValue, section: c.OldStartingIndex + c.OldItems.Count);
 						if (selectedIndexPath >= oldIndexPath && selectedIndexPath < oldIndexPathLast)
 						{
 							//Deset if selected item is in group being replaced
@@ -401,5 +473,60 @@ namespace Windows.UI.Xaml.Controls.Primitives
 		internal void OnItemClicked(SelectorItem selectorItem) => OnItemClicked(IndexFromContainer(selectorItem));
 
 		internal virtual void OnItemClicked(int clickedIndex) { }
+		
+		protected override void OnItemsChanged(object e)
+		{
+			if (e is IVectorChangedEventArgs iVCE)
+			{
+				if (iVCE.CollectionChange == CollectionChange.ItemChanged || iVCE.CollectionChange == CollectionChange.ItemInserted)
+				{
+					var item = Items[(int)iVCE.Index];
+
+					if (item is SelectorItem selectorItem && selectorItem.IsSelected)
+					{
+						ChangeSelectedItem(selectorItem, false, true);
+					}
+				}
+			}
+		}
+
+		// Check if the root of the resolved item template qualifies as a container, and if so return it as the container.
+		private protected override DependencyObject GetRootOfItemTemplateAsContainer(DataTemplate template)
+		{
+			if (_itemTemplatesThatArentContainers.Contains(template))
+			{
+				// We have seen this template before and it didn't qualify as a container, no need to materialize it
+				return null;
+			}
+
+			var templateRoot = template?.LoadContentCached();
+
+			if (IsItemItsOwnContainerOverride(templateRoot))
+			{
+				if (templateRoot is ContentControl contentControl)
+				{
+					// The container has been created from a template and can be recycled, so we mark it as generated
+					contentControl.IsGeneratedContainer = true;
+
+					contentControl.IsContainerFromItemTemplate = true;
+				}
+
+				return templateRoot as DependencyObject;
+			}
+
+			if (templateRoot != null)
+			{
+				_itemTemplatesThatArentContainers.Add(template);
+				template.ReleaseTemplateRoot(templateRoot);
+			}
+
+			return null;
+		}
+
+		private protected override void Refresh()
+		{
+			base.Refresh();
+			_itemTemplatesThatArentContainers.Clear();
+		}
 	}
 }

@@ -18,6 +18,13 @@ using Uno;
 using Uno.UI.Controls;
 using Uno.UI.Media;
 using System;
+using System.Collections;
+using System.Numerics;
+using System.Reflection;
+using Windows.UI.Xaml.Markup;
+using Microsoft.Extensions.Logging;
+using Windows.UI.Xaml.Controls.Primitives;
+using Windows.UI.Core;
 
 #if __IOS__
 using UIKit;
@@ -28,8 +35,17 @@ namespace Windows.UI.Xaml
 	public partial class UIElement : DependencyObject, IXUidProvider
 	{
 		private readonly SerialDisposable _clipSubscription = new SerialDisposable();
-		private readonly List<KeyboardAccelerator> _keyboardAccelerators = new List<KeyboardAccelerator>();
 		private string _uid;
+
+		/// <summary>
+		/// Is this view set to Window.Current.Content?
+		/// </summary>
+		internal bool IsWindowRoot { get; set; }
+
+		private void Initialize()
+		{
+			this.SetValue(KeyboardAcceleratorsProperty, new List<KeyboardAccelerator>(0), DependencyPropertyValuePrecedences.DefaultValue);
+		}
 
 		string IXUidProvider.Uid
 		{
@@ -43,11 +59,6 @@ namespace Windows.UI.Xaml
 
 		partial void OnUidChangedPartial();
 
-		/// <summary>
-		/// Determines if an <see cref="UIElement"/> clips its children to its bounds.
-		/// </summary>
-		internal bool ClipChildrenToBounds { get; set; } = true;
-
 		#region Clip DependencyProperty
 
 		public RectangleGeometry Clip
@@ -56,12 +67,12 @@ namespace Windows.UI.Xaml
 			set { this.SetValue(ClipProperty, value); }
 		}
 
-		public static readonly DependencyProperty ClipProperty =
+		public static DependencyProperty ClipProperty { get; } =
 			DependencyProperty.Register(
 				"Clip",
 				typeof(RectangleGeometry),
 				typeof(UIElement),
-				new PropertyMetadata(
+				new FrameworkPropertyMetadata(
 					null,
 					(s, e) => ((UIElement)s)?.OnClipChanged(e)
 				)
@@ -97,8 +108,8 @@ namespace Windows.UI.Xaml
 		/// <summary>
 		/// Backing dependency property for <see cref="RenderTransform"/>
 		/// </summary>
-		public static readonly DependencyProperty RenderTransformProperty =
-			DependencyProperty.Register("RenderTransform", typeof(Transform), typeof(UIElement), new PropertyMetadata(null, (s, e) => OnRenderTransformChanged(s, e)));
+		public static DependencyProperty RenderTransformProperty { get; } =
+			DependencyProperty.Register("RenderTransform", typeof(Transform), typeof(UIElement), new FrameworkPropertyMetadata(null, (s, e) => OnRenderTransformChanged(s, e)));
 
 		private static void OnRenderTransformChanged(object dependencyObject, DependencyPropertyChangedEventArgs args)
 		{
@@ -135,8 +146,8 @@ namespace Windows.UI.Xaml
 		}
 
 		// Using a DependencyProperty as the backing store for RenderTransformOrigin.  This enables animation, styling, binding, etc...
-		public static readonly DependencyProperty RenderTransformOriginProperty =
-			DependencyProperty.Register("RenderTransformOrigin", typeof(Point), typeof(UIElement), new PropertyMetadata(default(Point), (s, e) => OnRenderTransformOriginChanged(s, e)));
+		public static DependencyProperty RenderTransformOriginProperty { get; } =
+			DependencyProperty.Register("RenderTransformOrigin", typeof(Point), typeof(UIElement), new FrameworkPropertyMetadata(default(Point), (s, e) => OnRenderTransformOriginChanged(s, e)));
 
 		private static void OnRenderTransformOriginChanged(object dependencyObject, DependencyPropertyChangedEventArgs args)
 		{
@@ -147,23 +158,120 @@ namespace Windows.UI.Xaml
 		}
 		#endregion
 
-		#region IsHitTestVisible Dependency Property
+		public GeneralTransform TransformToVisual(UIElement visual)
+			=> new MatrixTransform { Matrix = new Matrix(GetTransform(from: this, to: visual)) };
 
-		public bool IsHitTestVisible
+		internal static Matrix3x2 GetTransform(UIElement from, UIElement to)
 		{
-			get { return (bool)this.GetValue(IsHitTestVisibleProperty); }
-			set { this.SetValue(IsHitTestVisibleProperty, value); }
+			if (from == to)
+			{
+				return Matrix3x2.Identity;
+			}
+
+#if NETSTANDARD // Depth is defined properly only on WASM and Skia
+			// If possible we try to navigate the tree upward so we have a greater chance
+			// to find an element in the parent hierarchy of the other element.
+			if (to is { } && from.Depth < to.Depth)
+			{
+				var toToFrom = GetTransform(to, from);
+				Matrix3x2.Invert(toToFrom, out var fromToTo);
+				return fromToTo;
+			}
+#endif
+
+			var matrix = Matrix3x2.Identity;
+			double offsetX = 0.0, offsetY = 0.0;
+			var elt = from;
+			do
+			{
+				var layoutSlot = elt.LayoutSlotWithMarginsAndAlignments;
+				var transform = elt.RenderTransform;
+				if (transform is null)
+				{
+					// As this is the common case, avoid Matrix computation when a basic addition is sufficient
+					offsetX += layoutSlot.X;
+					offsetY += layoutSlot.Y;
+				}
+				else
+				{
+					var origin = elt.RenderTransformOrigin;
+					var transformMatrix = origin == default
+						? transform.MatrixCore
+						: transform.ToMatrix(origin, layoutSlot.Size);
+
+					// First apply any pending arrange offset that would have been impacted by this RenderTransform (eg. scaled)
+					// Friendly reminder: Matrix multiplication is usually not commutative ;)
+					matrix *= Matrix3x2.CreateTranslation((float)offsetX, (float)offsetY);
+					matrix *= transformMatrix;
+
+					offsetX = layoutSlot.X;
+					offsetY = layoutSlot.Y;
+				}
+
+#if !__SKIA__ // On Skia, the ScrollViewer is actually using RenderTransform on its child, so they it's already included.
+				if (elt is ScrollViewer sv)
+				{
+					var zoom = sv.ZoomFactor;
+					if (zoom != 1)
+					{
+						matrix *= Matrix3x2.CreateTranslation((float)offsetX, (float)offsetY);
+						matrix *= Matrix3x2.CreateScale(zoom);
+
+						offsetX = -sv.HorizontalOffset;
+						offsetY = -sv.VerticalOffset;
+					}
+					else
+					{
+						offsetX -= sv.HorizontalOffset;
+						offsetY -= sv.VerticalOffset;
+					}
+				}
+#endif
+
+			} while (elt.TryGetParentUIElementForTransformToVisual(out elt, ref offsetX, ref offsetY) && elt != to); // If possible we stop as soon as we reach 'to'
+
+			matrix *= Matrix3x2.CreateTranslation((float)offsetX, (float)offsetY);
+
+			if (to != null && elt != to)
+			{
+				// Unfortunately we didn't find the 'to' in the parent hierarchy,
+				// so matrix == fromToRoot and we now have to compute the transform 'toToRoot'.
+				// Note: We do not propagate the 'intermediatesSelector' as cached transforms would be irrelevant
+				var toToRoot = GetTransform(to, null);
+				Matrix3x2.Invert(toToRoot, out var rootToTo);
+
+				matrix *= rootToTo;
+			}
+
+			return matrix;
 		}
 
-		public static readonly DependencyProperty IsHitTestVisibleProperty =
-			DependencyProperty.Register(
-				nameof(IsHitTestVisible),
-				typeof(bool),
-				typeof(UIElement),
-				new FrameworkPropertyMetadata(
-					defaultValue: true,
-					propertyChangedCallback: (s, e) => (s as UIElement).OnIsHitTestVisibleChanged((bool)e.OldValue, (bool)e.NewValue))
-			);
+#if !__IOS__ && !__ANDROID__ // This is the default implementation, but it can be customized per platform
+		/// <summary>
+		/// Note: Offsets are only an approximation which does not take in consideration possible transformations
+		///	applied by a 'UIView' between this element and its parent UIElement.
+		/// </summary>
+		private bool TryGetParentUIElementForTransformToVisual(out UIElement parentElement, ref double offsetX, ref double offsetY)
+		{
+			var parent = this.GetParent();
+			switch (parent)
+			{
+				case UIElement elt:
+					parentElement = elt;
+					return true;
+
+				case null:
+					parentElement = null;
+					return false;
+
+				default:
+					Application.Current.RaiseRecoverableUnhandledException(new InvalidOperationException("Found a parent which is NOT a UIElement."));
+
+					parentElement = null;
+					return false;
+			}
+		}
+#endif
 
 		protected virtual void OnIsHitTestVisibleChanged(bool oldValue, bool newValue)
 		{
@@ -172,66 +280,68 @@ namespace Windows.UI.Xaml
 
 		partial void OnIsHitTestVisibleChangedPartial(bool oldValue, bool newValue);
 
-		#endregion
-
-		#region Opacity Dependency Property
-
-		public double Opacity
-		{
-			get { return (double)this.GetValue(OpacityProperty); }
-			set { this.SetValue(OpacityProperty, value); }
-		}
-
-		public static readonly DependencyProperty OpacityProperty =
-			DependencyProperty.Register("Opacity", typeof(double), typeof(UIElement), new PropertyMetadata(1.0, (s, a) => ((UIElement)s).OnOpacityChanged(a)));
-
 		partial void OnOpacityChanged(DependencyPropertyChangedEventArgs args);
 
-		#endregion
-
-		#region Visibility Dependency Property
-
-		/// <summary>
-		/// Sets the visibility of the current view
-		/// </summary>
-		public
-#if __ANDROID__
-		new
-#endif
-			Visibility Visibility
+		private protected virtual void OnContextFlyoutChanged(FlyoutBase oldValue, FlyoutBase newValue)
 		{
-			get { return (Visibility)this.GetValue(VisibilityProperty); }
-			set { this.SetValue(VisibilityProperty, value); }
+			if (newValue != null)
+			{
+				RightTapped += OpenContextFlyout;
+			}
+			else
+			{
+				RightTapped -= OpenContextFlyout;
+			}
 		}
 
-		public static readonly DependencyProperty VisibilityProperty =
-			DependencyProperty.Register(
-				"Visibility",
-				typeof(Visibility),
-				typeof(UIElement),
-				new PropertyMetadata(
-					Visibility.Visible,
-					(s, e) => (s as UIElement).OnVisibilityChanged((Visibility)e.OldValue, (Visibility)e.NewValue)
-				)
-			);
-		#endregion
+		private void OpenContextFlyout(object sender, RightTappedRoutedEventArgs args)
+		{
+			if (this is FrameworkElement fe)
+			{
+				ContextFlyout?.ShowAt(
+					placementTarget: fe,
+					showOptions: new FlyoutShowOptions()
+					{
+						Position = args.GetPosition(this)
+					}
+				);
+			}
+		}
 
 		internal bool IsRenderingSuspended { get; set; }
 
-		private void ApplyClip()
+		internal void ApplyClip()
 		{
-			var rect = Clip?.Rect ?? Rect.Empty;
+			Rect rect;
 
-			if (Clip?.Transform is TranslateTransform translateTransform)
+			if (Clip == null)
 			{
-				rect.X += translateTransform.X;
-				rect.Y += translateTransform.Y;
+				rect = Rect.Empty;
+
+				if (NeedsClipToSlot)
+				{
+#if NETSTANDARD
+					rect = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
+#else
+					rect = ClippedFrame ?? Rect.Empty;
+#endif
+				}
+			}
+			else
+			{
+				rect = Clip.Rect;
+
+				//// Apply transform to clipping mask, if any
+				if (Clip.Transform != null)
+				{
+					rect = Clip.Transform.TransformBounds(rect);
+				}
 			}
 
-			EnsureClip(rect);
+			ApplyNativeClip(rect);
 		}
 
-		partial void EnsureClip(Rect rect);
+		partial void ApplyNativeClip(Rect rect);
 
 		internal static object GetDependencyPropertyValueInternal(DependencyObject owner, string dependencyPropertyName)
 		{
@@ -239,9 +349,59 @@ namespace Windows.UI.Xaml
 			return dp == null ? null : owner.GetValue(dp);
 		}
 
+		/// <summary>
+		/// Sets the specified dependency property value using the format "name|value"
+		/// </summary>
+		/// <param name="dependencyPropertyNameAndValue">The name and value of the property</param>
+		/// <returns>The currenty set value at the Local precedence</returns>
+		/// <remarks>
+		/// The signature of this method was chosen to work around a limitation of Xamarin.UITest with regards to
+		/// parameters passing on iOS, where the number of parameters follows a unconventional set of rules. Using
+		/// a single parameter with a simple delimitation format fits all platforms with little overhead.
+		/// </remarks>
+		internal static string SetDependencyPropertyValueInternal(DependencyObject owner, string dependencyPropertyNameAndValue)
+		{
+			var s = dependencyPropertyNameAndValue;
+			var index = s.IndexOf("|");
+
+			if (index != -1)
+			{
+				var dependencyPropertyName = s.Substring(0, index);
+				var value = s.Substring(index + 1);
+
+				if (DependencyProperty.GetProperty(owner.GetType(), dependencyPropertyName) is DependencyProperty dp)
+				{
+					if (owner.Log().IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
+					{
+						owner.Log().LogDebug($"SetDependencyPropertyValue({dependencyPropertyName}) = {value}");
+					}
+
+					owner.SetValue(dp, XamlBindingHelper.ConvertValue(dp.Type, value));
+
+					return owner.GetValue(dp)?.ToString();
+				}
+				else
+				{
+					if (owner.Log().IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
+					{
+						owner.Log().LogDebug($"Failed to find property [{dependencyPropertyName}] on [{owner}]");
+					}
+					return "**** Failed to find property";
+				}
+			}
+			else
+			{
+				return "**** Invalid property and value format.";
+			}
+		}
+
 		internal Rect LayoutSlot { get; set; } = default;
 
-#if !__WASM__
+		internal Rect LayoutSlotWithMarginsAndAlignments { get; set; } = default;
+
+		internal bool NeedsClipToSlot { get; set; }
+
+#if !NETSTANDARD
 		/// <summary>
 		/// Backing property for <see cref="Windows.UI.Xaml.Controls.Primitives.LayoutInformation.GetAvailableSize(UIElement)"/>
 		/// </summary>
@@ -250,7 +410,14 @@ namespace Windows.UI.Xaml
 		/// <summary>
 		/// Provides the size reported during the last call to Measure.
 		/// </summary>
-		public Size DesiredSize { get; internal set; }
+		/// <remarks>
+		/// DesiredSize INCLUDES MARGINS.
+		/// </remarks>
+		public Size DesiredSize
+		{
+			get;
+			internal set;
+		}
 
 		/// <summary>
 		/// Provides the size reported during the last call to Arrange (i.e. the ActualSize)
@@ -260,6 +427,13 @@ namespace Windows.UI.Xaml
 		public virtual void Measure(Size availableSize)
 		{
 		}
+
+#if !NETSTANDARD
+		/// <summary>
+		/// This is the Frame that should be used as "available Size" for the Arrange phase.
+		/// </summary>
+		internal Rect? ClippedFrame;
+#endif
 
 		public virtual void Arrange(Rect finalRect)
 		{
@@ -289,6 +463,9 @@ namespace Windows.UI.Xaml
 		public void InvalidateArrange()
 		{
 			InvalidateMeasure();
+#if !__WASM__
+			ClippedFrame = null;
+#endif
 		}
 #endif
 
@@ -300,7 +477,7 @@ namespace Windows.UI.Xaml
 		public void StartBringIntoView(BringIntoViewOptions options)
 		{
 #if __IOS__ || __ANDROID__
-			Dispatcher.RunAsync(Core.CoreDispatcherPriority.Normal, () =>
+			Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
 			{
 				// This currently doesn't support nested scrolling.
 				// This currently doesn't support BringIntoViewOptions.AnimationDesired.
@@ -312,7 +489,183 @@ namespace Windows.UI.Xaml
 
 		internal virtual bool IsViewHit() => true;
 
-		[global::Uno.NotImplemented]
-		public IList<KeyboardAccelerator> KeyboardAccelerators => _keyboardAccelerators;
+		internal double LayoutRound(double value)
+		{
+#if __SKIA__
+			double scaleFactor = GetScaleFactorForLayoutRounding();
+
+			return LayoutRound(value, scaleFactor);
+#else
+			return value;
+#endif
+		}
+
+		internal Rect LayoutRound(Rect value)
+		{
+#if __SKIA__
+			double scaleFactor = GetScaleFactorForLayoutRounding();
+
+			return new Rect(
+				x: LayoutRound(value.X, scaleFactor),
+				y: LayoutRound(value.Y, scaleFactor),
+				width: LayoutRound(value.Width, scaleFactor),
+				height: LayoutRound(value.Height, scaleFactor)
+			);
+#else
+			return value;
+#endif
+		}
+
+		internal Thickness LayoutRound(Thickness value)
+		{
+#if __SKIA__
+			double scaleFactor = GetScaleFactorForLayoutRounding();
+
+			return new Thickness(
+				top: LayoutRound(value.Top, scaleFactor),
+				bottom: LayoutRound(value.Bottom, scaleFactor),
+				left: LayoutRound(value.Left, scaleFactor),
+				right: LayoutRound(value.Right, scaleFactor)
+			);
+#else
+			return value;
+#endif
+		}
+
+		internal Vector2 LayoutRound(Vector2 value)
+		{
+#if __SKIA__
+			double scaleFactor = GetScaleFactorForLayoutRounding();
+
+			return new Vector2(
+				x: (float)LayoutRound(value.X, scaleFactor),
+				y: (float)LayoutRound(value.Y, scaleFactor)
+			);
+#else
+			return value;
+#endif
+		}
+
+		internal Size LayoutRound(Size value)
+		{
+#if __SKIA__
+			double scaleFactor = GetScaleFactorForLayoutRounding();
+
+			return new Size(
+				width: LayoutRound(value.Width, scaleFactor),
+				height: LayoutRound(value.Height, scaleFactor)
+			);
+#else
+			return value;
+#endif
+		}
+
+		private double LayoutRound(double value, double scaleFactor)
+		{
+			double returnValue = value;
+
+			// Plateau scale is applied as a scale transform on the root element. All values computed by layout
+			// will be multiplied by this scale. Layout assumes a plateau of 1, and values rounded to
+			// integers at layout plateau of 1 will not be integer values when scaled by plateau transform, causing
+			// sub-pixel rendering at plateau != 1. To correctly put element edges at device pixel boundaries, layout rounding
+			// needs to take plateau into account and produce values that will be rounded after plateau scaling is applied,
+			// i.e. multiples of 1/Plateau.
+			if (scaleFactor != 1.0)
+			{
+				returnValue = XcpRound(returnValue * scaleFactor) / scaleFactor;
+			}
+			else
+			{
+				// Avoid unnecessary multiply/divide at scale factor 1.
+				returnValue = XcpRound(returnValue);
+			}
+
+			return returnValue;
+		}
+
+		// GetScaleFactorForLayoutRounding() returns the plateau scale in most cases. For ScrollContentPresenter children though,
+		// the plateau scale gets combined with the owning ScrollViewer's ZoomFactor if headers are present.
+		private double GetScaleFactorForLayoutRounding()
+		{
+			// TODO use actual scaling based on current transforms.
+			return global::Windows.Graphics.Display.DisplayInformation.GetForCurrentView().LogicalDpi / 96.0f; // 100%
+		}
+
+		int XcpRound(double x)
+			=> (int)Math.Floor(x + 0.5);
+
+#if HAS_UNO_WINUI
+		#region FocusState DependencyProperty
+
+		public FocusState FocusState
+		{
+			get { return (FocusState)GetValue(FocusStateProperty); }
+			internal set { SetValue(FocusStateProperty, value); }
+		}
+
+		public static DependencyProperty FocusStateProperty { get; } =
+			DependencyProperty.Register(
+				"FocusState",
+				typeof(FocusState),
+				typeof(UIElement),
+				new FrameworkPropertyMetadata(
+					(FocusState)FocusState.Unfocused
+				)
+			);
+
+		#endregion
+
+		#region IsTabStop DependencyProperty
+
+		public bool IsTabStop
+		{
+			get { return (bool)GetValue(IsTabStopProperty); }
+			set { SetValue(IsTabStopProperty, value); }
+		}
+
+		public static DependencyProperty IsTabStopProperty { get; } =
+			DependencyProperty.Register(
+				"IsTabStop",
+				typeof(bool),
+				typeof(UIElement),
+				new FrameworkPropertyMetadata(
+					(bool)true,
+					(s, e) => ((Control)s)?.OnIsTabStopChanged((bool)e.OldValue, (bool)e.NewValue)
+				)
+			);
+		#endregion
+
+		private protected virtual void OnIsTabStopChanged(bool oldValue, bool newValue) { }
+#endif
+
+#if DEBUG
+		/// <summary>
+		/// A helper method while debugging to get the theme resource, if any, assigned to <paramref name="propertyName"/>.
+		/// </summary>
+		internal string GetThemeSource(string propertyName)
+		{
+			if (!propertyName.EndsWith("Property"))
+			{
+				propertyName += "Property";
+			}
+			var propInfo = GetType().GetTypeInfo().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+			var dp = propInfo.GetValue(null) as DependencyProperty;
+			var bindings = (this as IDependencyObjectStoreProvider).Store.GetResourceBindingsForProperty(dp);
+			if (bindings.Any())
+			{
+				var output = "";
+				foreach (var binding in bindings)
+				{
+					output += $"{binding.ResourceKey} ({binding.Precedence}), ";
+				}
+
+				return output;
+			}
+			else
+			{
+				return "[None]";
+			}
+		}
+#endif
 	}
 }

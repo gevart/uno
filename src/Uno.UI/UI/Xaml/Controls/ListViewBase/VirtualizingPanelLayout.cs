@@ -1,4 +1,4 @@
-﻿#if !NET461 && !__MACOS__
+﻿#if !NET461
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -13,6 +13,14 @@ namespace Windows.UI.Xaml.Controls
 {
 	abstract partial class VirtualizingPanelLayout : IScrollSnapPointsInfo
 	{
+		/// <summary>
+		/// Determines if the owner Panel is inside a popup. Used to determine
+		/// if the computation of the breadth should be using the parent's stretch
+		/// modes.
+		/// Related: https://github.com/unoplatform/uno/issues/135
+		/// </summary>
+		private bool IsInsidePopup { get; set; }
+
 		protected enum RelativeHeaderPlacement { Inline, Adjacent }
 
 		/// <summary>
@@ -20,8 +28,8 @@ namespace Windows.UI.Xaml.Controls
 		/// </summary>
 		/// <remarks>For <see cref="ItemsStackPanel"/> layouting this is identical to <see cref="Orientation"/> but for <see cref="ItemsWrapGrid"/> it is the opposite of <see cref="Orientation"/>.</remarks>
 		public abstract Orientation ScrollOrientation { get; }
-#if !__WASM__
-		protected readonly ILayouter _layouter = new VirtualizingPanelLayouter();
+#if !NETSTANDARD2_0
+		private protected readonly ILayouter _layouter = new VirtualizingPanelLayouter();
 		internal ILayouter Layouter => _layouter;
 #endif
 
@@ -109,8 +117,8 @@ namespace Windows.UI.Xaml.Controls
 			set { SetValue(OrientationProperty, value); }
 		}
 
-		public static readonly DependencyProperty OrientationProperty =
-			DependencyProperty.Register("Orientation", typeof(Orientation), typeof(VirtualizingPanelLayout), new PropertyMetadata(Orientation.Vertical, (o, e) => ((VirtualizingPanelLayout)o).OnOrientationChanged((Orientation)e.NewValue)));
+		public static DependencyProperty OrientationProperty { get ; } =
+			DependencyProperty.Register("Orientation", typeof(Orientation), typeof(VirtualizingPanelLayout), new FrameworkPropertyMetadata(Orientation.Vertical, (o, e) => ((VirtualizingPanelLayout)o).OnOrientationChanged((Orientation)e.NewValue)));
 
 		/// <summary>
 		/// Whether the content should be stretched in breadth (ie perpendicular to the direction of scroll).
@@ -122,6 +130,11 @@ namespace Windows.UI.Xaml.Controls
 				if (XamlParent == null)
 				{
 					return true;
+				}
+
+				if (IsInsidePopup)
+				{
+					return false;
 				}
 
 				if (ScrollOrientation == Orientation.Vertical)
@@ -198,7 +211,7 @@ namespace Windows.UI.Xaml.Controls
 		/// <summary>
 		/// Get the index of the next item that has not yet been materialized in the nominated fill direction. Returns null if there are no more available items in the source.
 		/// </summary>
-		protected IndexPath? GetNextUnmaterializedItem(GeneratorDirection fillDirection, IndexPath? currentMaterializedItem)
+		protected Uno.UI.IndexPath? GetNextUnmaterializedItem(GeneratorDirection fillDirection, Uno.UI.IndexPath? currentMaterializedItem)
 		{
 			return XamlParent?.GetNextItemIndex(currentMaterializedItem, fillDirection == GeneratorDirection.Forward ? 1 : -1);
 		}
@@ -237,7 +250,7 @@ namespace Windows.UI.Xaml.Controls
 			return (minItem, min);
 		}
 
-#if !__WASM__
+#if !NETSTANDARD2_0
 		private class VirtualizingPanelLayouter : Layouter
 		{
 

@@ -1,51 +1,44 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
-using System.Globalization;
 using System.Linq;
+using System.Numerics;
 using System.Runtime.InteropServices;
-using System.Threading;
-using Microsoft.Extensions.Logging;
-using Uno;
-using Uno.Extensions;
-using Uno.Foundation;
-using Uno.Logging;
-using Uno.UI.Xaml.Input;
-using Windows.Devices.Input;
 using Windows.Foundation;
 using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
-using Windows.System;
 using Uno.Collections;
+using Uno.Extensions;
+using Uno.Foundation;
+using Uno.Logging;
 using Uno.UI;
-using System.Numerics;
-using Windows.UI.Input;
+using Uno.UI.Extensions;
 using Uno.UI.Xaml;
+using Windows.UI.Xaml.Controls;
+using Windows.System;
+using System.Reflection;
+using Microsoft.Extensions.Logging;
+using Uno.Core.Comparison;
 
 namespace Windows.UI.Xaml
 {
 	public partial class UIElement : DependencyObject
 	{
-		// Even if this a concept of FrameworkElement, the loaded state is handled by the UIElement in order to avoid
-		// to cast to FrameworkElement each time a child is added or removed.
-		internal bool IsLoaded;
+		internal const string DefaultHtmlTag = "div";
 
 		private readonly GCHandle _gcHandle;
-		private readonly bool _isFrameworkElement;
 
-
-		private static class ClassNames
+		private static class UIElementNativeRegistrar
 		{
-			private static readonly Dictionary<Type, string[]> _classNames = new Dictionary<Type, string[]>();
+			private static readonly Dictionary<Type, int> _classNames = new Dictionary<Type, int>();
 
-			internal static string[] GetForType(Type type)
+			internal static int GetForType(Type type)
 			{
-				if(!_classNames.TryGetValue(type, out var names))
+				if (!_classNames.TryGetValue(type, out var classNamesRegistrationId))
 				{
-					_classNames[type] = names = GetClassesForType(type).ToArray();
+					_classNames[type] = classNamesRegistrationId = WindowManagerInterop.RegisterUIElement(type.FullName, GetClassesForType(type).ToArray(), type.Is<FrameworkElement>());
 				}
 
-				return names;
+				return classNamesRegistrationId;
 			}
 
 			private static IEnumerable<string> GetClassesForType(Type type)
@@ -80,11 +73,21 @@ namespace Windows.UI.Xaml
 			return new Rect(double.Parse(sizeParts[0]), double.Parse(sizeParts[1]), double.Parse(sizeParts[2]), double.Parse(sizeParts[3]));
 		}
 
-		public UIElement(string htmlTag = "div", bool isSvg = false)
+		public UIElement() : this(null, false) { }
+
+		public UIElement(string htmlTag = DefaultHtmlTag) : this(htmlTag, false) { }
+
+		public UIElement(string htmlTag, bool isSvg)
 		{
+			_log = this.Log();
+			_logDebug = _log.IsEnabled(LogLevel.Debug) ? _log : null;
+
+			Initialize();
+
 			_gcHandle = GCHandle.Alloc(this, GCHandleType.Weak);
 			_isFrameworkElement = this is FrameworkElement;
-			HtmlTag = htmlTag;
+
+			HtmlTag = GetHtmlTag(htmlTag);
 			HtmlTagIsSvg = isSvg;
 
 			var type = GetType();
@@ -92,22 +95,54 @@ namespace Windows.UI.Xaml
 			Handle = GCHandle.ToIntPtr(_gcHandle);
 			HtmlId = Handle;
 
-
 			Uno.UI.Xaml.WindowManagerInterop.CreateContent(
 				htmlId: HtmlId,
 				htmlTag: HtmlTag,
 				handle: Handle,
-				fullName: type.FullName,
+				uiElementRegistrationId: UIElementNativeRegistrar.GetForType(type),
 				htmlTagIsSvg: HtmlTagIsSvg,
-				isFrameworkElement: this is FrameworkElement,
-				isFocusable: false,
-				classes: ClassNames.GetForType(type)
+				isFocusable: false
 			);
 
 			InitializePointers();
 			UpdateHitTest();
+		}
 
-			FocusManager.Track(this);
+		private static Dictionary<Type, string> _htmlTagCache = new Dictionary<Type, string>(FastTypeComparer.Default);
+		private static Type _htmlElementAttribute;
+		private static PropertyInfo _htmlTagAttributeTagGetter;
+		private static readonly Assembly _unoUIAssembly = typeof(UIElement).Assembly;
+
+		private string GetHtmlTag(string htmlTag)
+		{
+			var currentType = GetType();
+
+			if (currentType.Assembly != _unoUIAssembly)
+			{
+				if (_htmlElementAttribute == null)
+				{
+					_htmlElementAttribute = Assembly.Load("Uno.UI.Runtime.WebAssembly").GetType("Uno.UI.Runtime.WebAssembly.HtmlElementAttribute", true);
+					_htmlTagAttributeTagGetter = _htmlElementAttribute.GetProperty("Tag");
+				}
+
+				if (!_htmlTagCache.TryGetValue(currentType, out var htmlTagOverride))
+				{
+					htmlTagOverride = DefaultHtmlTag;
+
+					if (currentType.GetCustomAttribute(_htmlElementAttribute) is Attribute attr)
+					{
+						_htmlTagCache[currentType] = htmlTagOverride = _htmlTagAttributeTagGetter.GetValue(attr, Array.Empty<object>()) as string;
+					}
+
+					_htmlTagCache[currentType] = htmlTagOverride;
+				}
+
+				return htmlTagOverride;
+			}
+			else
+			{
+				return htmlTag;
+			}
 		}
 
 		~UIElement()
@@ -116,6 +151,8 @@ namespace Windows.UI.Xaml
 			{
 				this.Log().Debug($"Collecting UIElement for [{HtmlId}]");
 			}
+
+			Cleanup();
 
 			Uno.UI.Xaml.WindowManagerInterop.DestroyView(HtmlId);
 
@@ -151,6 +188,40 @@ namespace Windows.UI.Xaml
 		}
 
 		/// <summary>
+		/// Add/Set CSS classes to the HTML element.
+		/// </summary>
+		/// <remarks>
+		/// No effect for classes already present on the element.
+		/// </remarks>
+		protected internal void SetCssClasses(params string[] classesToSet)
+		{
+			Uno.UI.Xaml.WindowManagerInterop.SetUnsetCssClasses(HtmlId, classesToSet, null);
+		}
+
+		/// <summary>
+		/// Remove/Unset CSS classes to the HTML element.
+		/// </summary>
+		/// <remarks>
+		/// No effect for classes already absent from the element.
+		/// </remarks>
+		protected internal void UnsetCssClasses(params string[] classesToUnset)
+		{
+			Uno.UI.Xaml.WindowManagerInterop.SetUnsetCssClasses(HtmlId, null, classesToUnset);
+
+		}
+
+		/// <summary>
+		/// Set and Unset css classes on a HTML element in a single operation.
+		/// </summary>
+		/// <remarks>
+		/// Identical to calling <see cref="SetCssClasses"/> followed by <see cref="UnsetCssClasses"/>.
+		/// </remarks>
+		protected internal void SetUnsetCssClasses(string[] classesToSet, string[] classesToUnset)
+		{
+			Uno.UI.Xaml.WindowManagerInterop.SetUnsetCssClasses(HtmlId, classesToSet, classesToUnset);
+		}
+
+		/// <summary>
 		/// Set a specified CSS class to an element from a set of possible values.
 		/// All other possible values will be removed from the element.
 		/// </summary>
@@ -165,8 +236,23 @@ namespace Windows.UI.Xaml
 		private long _arrangeCount = 0;
 #endif
 
-		protected internal void ArrangeElementNative(Rect rect, Rect? clipRect)
+		/// <summary>
+		/// Natively arranges and clips an element.
+		/// </summary>
+		/// <param name="rect">The dimensions to apply to the element</param>
+		/// <param name="clipRect">The Clip rect to set, if any</param>
+		protected internal void ArrangeVisual(Rect rect, Rect? clipRect)
 		{
+			LayoutSlotWithMarginsAndAlignments =
+				VisualTreeHelper.GetParent(this) is UIElement parent
+					? rect.DeflateBy(parent.GetBorderThickness())
+					: rect;
+
+			if (FeatureConfiguration.UIElement.AssignDOMXamlProperties)
+			{
+				UpdateDOMXamlProperty(nameof(LayoutSlotWithMarginsAndAlignments), LayoutSlotWithMarginsAndAlignments);
+			}
+
 			Uno.UI.Xaml.WindowManagerInterop.ArrangeElement(HtmlId, rect, clipRect);
 
 #if DEBUG
@@ -183,11 +269,6 @@ namespace Windows.UI.Xaml
 
 		protected internal void ResetStyle(params string[] names)
 		{
-			if (names == null || names.Length == 0)
-			{
-				// nothing to do
-			}
-
 			Uno.UI.Xaml.WindowManagerInterop.ResetStyle(HtmlId, names);
 
 		}
@@ -195,6 +276,11 @@ namespace Windows.UI.Xaml
 		protected internal void SetAttribute(string name, string value)
 		{
 			Uno.UI.Xaml.WindowManagerInterop.SetAttribute(HtmlId, name, value);
+		}
+
+		protected internal void RemoveAttribute(string name)
+		{
+			Uno.UI.Xaml.WindowManagerInterop.RemoveAttribute(HtmlId, name);
 		}
 
 		protected internal void SetAttribute(params (string name, string value)[] attributes)
@@ -237,11 +323,11 @@ namespace Windows.UI.Xaml
 			Uno.UI.Xaml.WindowManagerInterop.SetContentHtml(HtmlId, html);
 		}
 
-		partial void EnsureClip(Rect rect)
+		partial void ApplyNativeClip(Rect rect)
 		{
 			if (rect.IsEmpty)
 			{
-				SetStyle("clip", "");
+				ResetStyle("clip");
 				return;
 			}
 
@@ -250,263 +336,21 @@ namespace Windows.UI.Xaml
 
 			SetStyle(
 				"clip",
-				"rect("
-				+ Math.Floor(rect.Y) + "px,"
-				+ Math.Ceiling(rect.X + width) + "px,"
-				+ Math.Ceiling(rect.Y + height) + "px,"
-				+ Math.Floor(rect.X) + "px"
-				+ ")"
+				string.Concat(
+					"rect(",
+					Math.Floor(rect.Y).ToStringInvariant(), "px,",
+					Math.Ceiling(rect.X + width).ToStringInvariant(), "px,",
+					Math.Ceiling(rect.Y + height).ToStringInvariant(), "px,",
+					Math.Floor(rect.X).ToStringInvariant(), "px)"
+				)
 			);
-		}
-
-		internal enum HtmlEventFilter
-		{
-			Default,
-			LeftPointerEventFilter,
-		}
-
-		internal enum HtmlEventExtractor
-		{
-			PointerEventExtractor, // See PayloadToPointerArgs
-			TappedEventExtractor,
-			KeyboardEventExtractor,
-			FocusEventExtractor,
-			CustomEventDetailStringExtractor, // For use with CustomEvent("name", {detail:{string detail here}})
-			CustomEventDetailJsonExtractor, // For use with CustomEvent("name", {detail:{detail here}}) - will be JSON.stringify
-		}
-
-		internal delegate EventArgs EventArgsParser(object sender, string payload);
-
-		private class EventRegistration
-		{
-			private static readonly string[] noRegistrationEventNames = { "loading", "loaded", "unloaded" };
-			private static readonly Func<EventArgs, bool> _emptyFilter = _ => true;
-
-			private readonly UIElement _owner;
-			private readonly string _eventName;
-			private readonly bool _canBubbleNatively;
-			private readonly EventArgsParser _payloadConverter;
-			private readonly Func<EventArgs, bool> _eventFilterManaged;
-			private readonly Action _subscribeCommand;
-
-			private List<Delegate> _invocationList = new List<Delegate>();
-			private List<Delegate> _pendingInvocationList;
-			private bool _isSubscribed = false;
-			private bool _isDispatching;
-
-			public EventRegistration(
-				UIElement owner,
-				string eventName,
-				bool onCapturePhase = false,
-				bool canBubbleNatively = false,
-				HtmlEventFilter? eventFilter = null,
-				HtmlEventExtractor? eventExtractor = null,
-				EventArgsParser payloadConverter = null,
-				Func<EventArgs, bool> eventFilterManaged = null)
-			{
-				_owner = owner;
-				_eventName = eventName;
-				_canBubbleNatively = canBubbleNatively;
-				_payloadConverter = payloadConverter;
-				_eventFilterManaged = eventFilterManaged ?? _emptyFilter;
-				if (noRegistrationEventNames.Contains(eventName))
-				{
-					_subscribeCommand = null;
-				}
-				else
-				{
-					_subscribeCommand = () => WindowManagerInterop.RegisterEventOnView(_owner.HtmlId, eventName, onCapturePhase, eventFilter?.ToString(), eventExtractor?.ToString());
-				}
-			}
-
-			public void Add(Delegate handler)
-			{
-				// Do not alter the invocation list while enumerating it (_isDispatching)
-				var invocationList = _isDispatching
-					? _pendingInvocationList ?? (_pendingInvocationList = new List<Delegate>(_invocationList))
-					: _invocationList;
-
-				if (invocationList.Contains(handler))
-				{
-					return;
-				}
-
-				invocationList.Add(handler);
-				if (_subscribeCommand != null && invocationList.Count == 1 && !_isSubscribed)
-				{
-					_subscribeCommand();
-					_isSubscribed = true;
-				}
-			}
-
-			public void Remove(Delegate handler)
-			{
-				// Do not alter the invocation list while enumerating it (_isDispatching)
-				var invocationList = _isDispatching
-					? _pendingInvocationList ?? (_pendingInvocationList = new List<Delegate>(_invocationList))
-					: _invocationList;
-
-				invocationList.Remove(handler);
-
-				// TODO: Removing handler in HTML not supported yet
-				// var command = $"Uno.UI.WindowManager.current.unregisterEventOnView(\"{HtmlId}\", \"{eventName}\");";
-				// WebAssemblyRuntime.InvokeJS(command);
-				// _isSubscribed = false;
-			}
-
-			public bool Dispatch(EventArgs eventArgs, string nativeEventPayload)
-			{
-				if (_invocationList.Count == 0)
-				{
-					// Nothing to do (should not occur once we can remove handler in HTML)
-					return false;
-				}
-
-				try
-				{
-					_isDispatching = true;
-
-					if (this.Log().IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
-					{
-						this.Log().Debug($"{_owner}: Dispatching event {_eventName}");
-					}
-
-					var args = eventArgs;
-					if (_payloadConverter != null && nativeEventPayload != null)
-					{
-						args = _payloadConverter(_owner, nativeEventPayload);
-					}
-
-					if (args is RoutedEventArgs routedArgs)
-					{
-						routedArgs.CanBubbleNatively = _canBubbleNatively;
-					}
-
-					if (_eventFilterManaged(args))
-					{
-						foreach (var handler in _invocationList)
-						{
-							var result = handler.DynamicInvoke(_owner, args);
-
-							if (result is bool isHandedInManaged && isHandedInManaged)
-							{
-								return true; // will call ".preventDefault()" in JS to prevent native bubbling
-							}
-						}
-					}
-
-					return false; // let native bubbling in HTML
-				}
-				catch (Exception e)
-				{
-					if (this.Log().IsEnabled(LogLevel.Error))
-					{
-						this.Log().Error($"Failed to dispatch event {_eventName} on {_owner.HtmlId} to {_invocationList.Count} handlers.", e);
-					}
-
-					throw;
-				}
-				finally
-				{
-					_isDispatching = false;
-
-					// An handler was added / removed while dispatching the event, so apply the change.
-					if (_pendingInvocationList != null)
-					{
-						_invocationList = _pendingInvocationList;
-						_pendingInvocationList = null;
-					}
-				}
-			}
-		}
-
-		private readonly Dictionary<string, EventRegistration> _eventHandlers = new Dictionary<string, EventRegistration>(StringComparer.InvariantCultureIgnoreCase);
-
-		internal void RegisterEventHandler(
-			string eventName,
-			Delegate handler,
-			bool onCapturePhase = false,
-			bool canBubbleNatively = false,
-			HtmlEventFilter? eventFilter = null,
-			HtmlEventExtractor? eventExtractor = null,
-			EventArgsParser payloadConverter = null)
-		{
-			if (this.Log().IsEnabled(LogLevel.Debug))
-			{
-				this.Log().Debug($"Registering {eventName} on {this}.");
-			}
-
-			if (!_eventHandlers.TryGetValue(eventName, out var registration))
-			{
-				_eventHandlers[eventName] = registration = new EventRegistration(
-					this,
-					eventName,
-					onCapturePhase,
-					canBubbleNatively,
-					eventFilter,
-					eventExtractor,
-					payloadConverter);
-			}
-
-			registration.Add(handler);
-		}
-
-		internal void UnregisterEventHandler(string eventName, Delegate handler)
-		{
-			if (_eventHandlers.TryGetValue(eventName, out var registration))
-			{
-				registration.Remove(handler);
-			}
-			else if (this.Log().IsEnabled(LogLevel.Debug))
-			{
-				this.Log().Debug(message: $"No handler registered for event {eventName}.");
-			}
-		}
-
-		internal bool InternalDispatchEvent(string eventName, EventArgs eventArgs = null, string nativeEventPayload = null)
-		{
-			var n = eventName;
-			try
-			{
-				if (_eventHandlers.TryGetValue(n, out var registration))
-				{
-					return registration.Dispatch(eventArgs, nativeEventPayload);
-				}
-
-				var registered = string.Join(", ", _eventHandlers.Keys);
-
-				this.Log().Warn(message: $"{this}: No Handler for {n}. Registered: {registered}");
-			}
-			catch (Exception e)
-			{
-				this.Log().Error(message: $"{this}/{eventName}/\"{nativeEventPayload}\": Error: {e}");
-				Application.Current.RaiseRecoverableUnhandledExceptionOrLog(e, this);
-			}
-
-			return false;
-		}
-
-		[Preserve]
-		public static bool DispatchEvent(int handle, string eventName, string eventArgs)
-		{
-			// Dispatch to right object, if we can find it
-			if (GetElementFromHandle(handle) is UIElement element)
-			{
-				return element.InternalDispatchEvent(eventName, nativeEventPayload: eventArgs);
-			}
-			else
-			{
-				Console.Error.WriteLine($"No UIElement found for htmlId \"{handle}\"");
-			}
-
-			return false;
 		}
 
 		internal static UIElement GetElementFromHandle(int handle)
 		{
 			var gcHandle = GCHandle.FromIntPtr((IntPtr)handle);
 
-			if(gcHandle.IsAllocated && gcHandle.Target is UIElement element)
+			if (gcHandle.IsAllocated && gcHandle.Target is UIElement element)
 			{
 				return element;
 			}
@@ -516,7 +360,6 @@ namespace Windows.UI.Xaml
 
 		private Rect _arranged;
 		private string _name;
-		internal readonly IList<UIElement> _children = new MaterializableList<UIElement>();
 
 		public string Name
 		{
@@ -558,9 +401,6 @@ namespace Windows.UI.Xaml
 
 		public Func<Size, Size> DesiredSizeSelector { get; set; }
 
-		internal Windows.Foundation.Point GetPosition(Point position, global::Windows.UI.Xaml.UIElement relativeTo)
-			=> TransformToVisual(relativeTo).TransformPoint(position);
-
 		protected virtual void OnVisibilityChanged(Visibility oldValue, Visibility newVisibility)
 		{
 			InvalidateMeasure();
@@ -573,6 +413,11 @@ namespace Windows.UI.Xaml
 			else
 			{
 				SetStyle("visibility", "hidden");
+			}
+
+			if (FeatureConfiguration.UIElement.AssignDOMXamlProperties)
+			{
+				UpdateDOMProperties();
 			}
 		}
 
@@ -593,39 +438,21 @@ namespace Windows.UI.Xaml
 		partial void OnIsHitTestVisibleChangedPartial(bool oldValue, bool newValue)
 		{
 			UpdateHitTest();
+
+			if (FeatureConfiguration.UIElement.AssignDOMXamlProperties)
+			{
+				UpdateDOMProperties();
+			}
 		}
 
 		public override string ToString()
 		{
-			return GetType().Name + "-" + HtmlId;
-		}
-
-		public GeneralTransform TransformToVisual(UIElement visual)
-		{
-			var bounds = GetBoundingClientRect();
-			var otherBounds = new Rect(0, 0, 0, 0);
-
-			// If visual is null, we transform the element to the window
-			if (visual == null)
+			if (FeatureConfiguration.UIElement.RenderToStringWithId)
 			{
-				// Do nothing (leave at 0,0)
-			}
-			else
-			{
-				otherBounds = visual.GetBoundingClientRect();
+				return GetType().Name + "-" + HtmlId;
 			}
 
-			return new MatrixTransform
-			{
-				Matrix = new Matrix(
-					m11: 1,
-					m12: 0,
-					m21: 0,
-					m22: 1,
-					offsetX: bounds.X - otherBounds.X,
-					offsetY: bounds.Y - otherBounds.Y
-				)
-			};
+			return base.ToString();
 		}
 
 		internal virtual bool IsEnabledOverride() => true;
@@ -663,16 +490,16 @@ namespace Windows.UI.Xaml
 
 			OnAddingChild(child);
 
-			_children.Add(child);
-
-			if (index.HasValue)
+			if (index is { } i)
 			{
-				Uno.UI.Xaml.WindowManagerInterop.AddView(HtmlId, child.HtmlId, index);
+				_children.Insert(i, child);
 			}
 			else
 			{
-				Uno.UI.Xaml.WindowManagerInterop.AddView(HtmlId, child.HtmlId);
+				_children.Add(child);
 			}
+
+			Uno.UI.Xaml.WindowManagerInterop.AddView(HtmlId, child.HtmlId, index);
 
 			OnChildAdded(child);
 
@@ -684,16 +511,52 @@ namespace Windows.UI.Xaml
 
 		public void ClearChildren()
 		{
-			foreach (var child in _children)
+			for (var i = 0; i < _children.Count; i++)
 			{
-				child.SetParent(null);
-				Uno.UI.Xaml.WindowManagerInterop.RemoveView(HtmlId, child.HtmlId);
+				var child = _children[i];
 
+				RemoveNativeView(child);
 				OnChildRemoved(child);
 			}
 
 			_children.Clear();
 			InvalidateMeasure();
+		}
+
+		private void RemoveNativeView(UIElement child)
+		{
+			var childParent = child.GetParent();
+
+			child.SetParent(null);
+
+			// The parent may already be null if the parent has already been collected.
+			// In such case, there is no need to remove the child from its parent in the DOM.
+			if (childParent != null)
+			{
+				Uno.UI.Xaml.WindowManagerInterop.RemoveView(HtmlId, child.HtmlId);
+			}
+		}
+
+		private void Cleanup()
+		{
+			if (this.GetParent() is UIElement originalParent)
+			{
+				originalParent.RemoveChild(this);
+			}
+
+			if (this is Windows.UI.Xaml.Controls.Panel panel)
+			{
+				panel.Children.Clear();
+			}
+			else
+			{
+				for (var i = 0; i < _children.Count; i++)
+				{
+					RemoveNativeView(_children[i]);
+				}
+
+				_children.Clear();
+			}
 		}
 
 		public bool RemoveChild(UIElement child)
@@ -732,112 +595,8 @@ namespace Windows.UI.Xaml
 			InvalidateMeasure();
 		}
 
-		private void OnAddingChild(UIElement child)
-		{
-			if (FeatureConfiguration.FrameworkElement.WasmUseManagedLoadedUnloaded
-				&& IsLoaded
-				&& child._isFrameworkElement)
-			{
-				if (child.IsLoaded)
-				{
-					this.Log().Error($"{this}: Inconsistent state: child {child} is already loaded (OnAddingChild)");
-				}
-				else
-				{
-					child.ManagedOnLoading();
-				}
-			}
-		}
-
-		private void OnChildAdded(UIElement child)
-		{
-			if (FeatureConfiguration.FrameworkElement.WasmUseManagedLoadedUnloaded
-				&& IsLoaded
-				&& child._isFrameworkElement)
-			{
-				if (child.IsLoaded)
-				{
-					this.Log().Error($"{this}: Inconsistent state: child {child} is already loaded (OnChildAdded)");
-				}
-				else
-				{
-					child.ManagedOnLoaded();
-				}
-			}
-		}
-
-		private void OnChildRemoved(UIElement child)
-		{
-			if (FeatureConfiguration.FrameworkElement.WasmUseManagedLoadedUnloaded
-				&& IsLoaded
-				&& child._isFrameworkElement)
-			{
-				if (child.IsLoaded)
-				{
-					child.ManagedOnUnloaded();
-				}
-				else
-				{
-					this.Log().Error($"{this}: Inconsistent state: child {child} is not loaded (OnChildRemoved)");
-				}
-			}
-		}
-
-		internal virtual void ManagedOnLoading()
-		{
-			foreach (var child in _children)
-			{
-				child.ManagedOnLoading();
-			}
-		}
-
-		internal virtual void ManagedOnLoaded()
-		{
-			IsLoaded = true;
-
-			foreach (var child in _children)
-			{
-				child.ManagedOnLoaded();
-			}
-		}
-
-		internal virtual void ManagedOnUnloaded()
-		{
-			IsLoaded = false;
-
-			foreach (var child in _children)
-			{
-				child.ManagedOnUnloaded();
-			}
-		}
-
 		// We keep track of registered routed events to avoid registering the same one twice (mainly because RemoveHandler is not implemented)
 		private RoutedEventFlag _registeredRoutedEvents;
-
-		partial void AddFocusHandler(RoutedEvent routedEvent, int handlersCount, object handler, bool handledEventsToo)
-		{
-			if (handlersCount != 1
-				// We do not remove event handlers for now, so do not rely only on the handlersCount and keep track of registered events
-				|| _registeredRoutedEvents.HasFlag(routedEvent.Flag))
-			{
-				return;
-			}
-			_registeredRoutedEvents |= routedEvent.Flag;
-
-			var domEventName = routedEvent.Flag == RoutedEventFlag.GotFocus ? "focus"
-				: routedEvent.Flag == RoutedEventFlag.LostFocus ? "focusout"
-				: throw new ArgumentOutOfRangeException(nameof(routedEvent), "Not a focus event");
-
-			RegisterEventHandler(
-				domEventName,
-				handler: new RoutedEventHandlerWithHandled((snd, args) => RaiseEvent(routedEvent, args)),
-				onCapturePhase: false,
-				canBubbleNatively: true,
-				eventFilter: HtmlEventFilter.Default,
-				eventExtractor: HtmlEventExtractor.FocusEventExtractor,
-				payloadConverter: PayloadToFocusArgs
-			);
-		}
 
 		partial void AddKeyHandler(RoutedEvent routedEvent, int handlersCount, object handler, bool handledEventsToo)
 		{
@@ -849,31 +608,63 @@ namespace Windows.UI.Xaml
 			}
 			_registeredRoutedEvents |= routedEvent.Flag;
 
-			var domEventName = routedEvent.Flag == RoutedEventFlag.KeyDown ? "keydown"
-				: routedEvent.Flag == RoutedEventFlag.KeyUp ? "keyup"
-				: throw new ArgumentOutOfRangeException(nameof(routedEvent), "Not a keyboard event");
+			string domEventName;
+			if (routedEvent.Flag == RoutedEventFlag.KeyDown)
+			{
+				domEventName = "keydown";
+			}
+			else
+			{
+				domEventName = routedEvent.Flag == RoutedEventFlag.KeyUp
+					? "keyup"
+					: throw new ArgumentOutOfRangeException(nameof(routedEvent), "Not a keyboard event");
+			}
 
 			RegisterEventHandler(
 				domEventName,
 				handler: new RoutedEventHandlerWithHandled((snd, args) => RaiseEvent(routedEvent, args)),
 				onCapturePhase: false,
-				canBubbleNatively: true,
-				eventFilter: HtmlEventFilter.Default,
 				eventExtractor: HtmlEventExtractor.KeyboardEventExtractor,
 				payloadConverter: PayloadToKeyArgs
 			);
 		}
 
+		/// <summary>
+		/// If corresponding feature flag is enabled, set layout properties as DOM attributes to aid in debugging.
+		/// </summary>
+		/// <remarks>
+		/// Calls to this method should be wrapped in a check of the feature flag, to avoid the expense of a virtual method call
+		/// that will most of the time do nothing in hot code paths.
+		/// </remarks>
+		private protected virtual void UpdateDOMProperties()
+		{
+			if (FeatureConfiguration.UIElement.AssignDOMXamlProperties)
+			{
+				UpdateDOMXamlProperty(nameof(Visibility), Visibility);
+				UpdateDOMXamlProperty(nameof(IsHitTestVisible), IsHitTestVisible);
+			}
+		}
+
+		/// <summary>
+		/// Sets a Xaml property as a DOM attribute for debugging.
+		/// </summary>
+		/// <param name="propertyName">The property's name</param>
+		/// <param name="value">The current property value</param>
+		internal void UpdateDOMXamlProperty(string propertyName, object value)
+		{
+			WindowManagerInterop.SetAttribute(HtmlId, "xaml" + propertyName.ToLowerInvariant().Replace('.', '_'), value?.ToString() ?? "[null]");
+		}
+
 		private static KeyRoutedEventArgs PayloadToKeyArgs(object src, string payload)
 		{
-			return new KeyRoutedEventArgs(src, System.VirtualKeyHelper.FromKey(payload));
+			return new KeyRoutedEventArgs(src, VirtualKeyHelper.FromKey(payload)) {CanBubbleNatively = true};
 		}
 
 		private static RoutedEventArgs PayloadToFocusArgs(object src, string payload)
 		{
-			if(int.TryParse(payload, out int xamlHandle))
+			if (int.TryParse(payload, out int xamlHandle))
 			{
-				if(GetElementFromHandle(xamlHandle) is UIElement element)
+				if (GetElementFromHandle(xamlHandle) is UIElement element)
 				{
 					return new RoutedEventArgs(element);
 				}

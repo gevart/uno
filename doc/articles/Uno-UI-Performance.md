@@ -21,7 +21,8 @@ Here's what to look for:
 	- Prefer Storyboard setters to `ObjectAnimationUsingKeyFrames` if there is only one key frame.
 	- Prefer changing the properties of a visual element instead of switching opacity or visibility of an element.
 - Image Assets
-	- Try using an image that is appropriate for the DPI and screen size. 
+	- Try using an image that is appropriate for the DPI and screen size.
+    - Whenever possible, specify and explicit Width and Height on `Image`.
 	- The pixel size of an image will impact the loading time of the image. If the image is intentionally blurry, prefer reducing the physical size of the image over 
 	  the compressed disk size of the image.
 - Paths
@@ -36,6 +37,14 @@ Here's what to look for:
 	- It is also supported as `xamarin:Phase` on controls that do not have bindings. This feature is not supported by UWP.
 	- It is only supported for elements under the `DataTemplate` of a `ListViewItem`. The 
 	attribute is ignored for templates of `ContentControl` instances, or any other control.
+    - When binding to Brushes with a solid color, prefer binding to the `Color` property like this if the brush type does not change:
+    ```xaml
+    <TextBlock Text="My Text">
+        <TextBlock.Foreground>
+            <SolidColorBrush Color="{x:Bind Color, Mode=OneWay, FallbackValue=Red}" />
+        </TextBlock.Foreground>
+    </TextBlock>
+    ```
 
 
 ## Performance Tracing

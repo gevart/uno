@@ -6,12 +6,17 @@ using Microsoft.Extensions.Logging;
 using Uno.Client;
 using Uno.Disposables;
 using Uno.Extensions;
+using Uno.UI;
 using Windows.Foundation;
 using Windows.UI.Xaml.Input;
+using Windows.UI.Xaml.Media;
+using Windows.System;
+using Uno.UI.DataBinding;
 
 namespace Windows.UI.Xaml.Controls
 {
-	public partial class ContentDialog : ContentControl
+	public partial class
+		ContentDialog : ContentControl
 	{
 		internal readonly Popup _popup;
 		private TaskCompletionSource<ContentDialogResult> _tcs;
@@ -19,24 +24,37 @@ namespace Windows.UI.Xaml.Controls
 
 		public ContentDialog() : base()
 		{
-			_popup = new Popup();
+			_popup = new Popup()
+			{
+				LightDismissOverlayMode = LightDismissOverlayMode.On,
+			};
+
+			ResourceResolver.ApplyResource(_popup, Popup.LightDismissOverlayBackgroundProperty, "ContentDialogLightDismissOverlayBackground", isThemeResourceExtension: true);
+
 			_popup.PopupPanel = new ContentDialogPopupPanel(this);
+
+			var thisRef = (this as IWeakReferenceProvider).WeakReference;
 			_popup.Opened += (s, e) =>
 			{
-				Opened?.Invoke(this, new ContentDialogOpenedEventArgs());
-				VisualStateManager.GoToState(this, "DialogShowing", true);
+				if (thisRef.Target is ContentDialog that)
+				{
+					that.Opened?.Invoke(that, new ContentDialogOpenedEventArgs());
+					VisualStateManager.GoToState(that, "DialogShowing", true);
+				}
 			};
 			this.KeyDown += OnPopupKeyDown;
 
 			Loaded += (s, e) => RegisterEvents();
 			Unloaded += (s, e) => UnregisterEvents();
+
+			DefaultStyleKey = typeof(ContentDialog);
 		}
 
 		private void OnPopupKeyDown(object sender, KeyRoutedEventArgs e)
 		{
 			switch (e.Key)
 			{
-				case System.VirtualKey.Enter:
+				case VirtualKey.Enter:
 					switch (DefaultButton)
 					{
 						case ContentDialogButton.Close:
@@ -57,20 +75,21 @@ namespace Windows.UI.Xaml.Controls
 					}
 					break;
 
-				case System.VirtualKey.Escape:
+				case VirtualKey.Escape:
 					ProcessCloseButton();
 					break;
 			}
 		}
 
 		public void Hide() => Hide(ContentDialogResult.None);
-		private void Hide(ContentDialogResult result)
+		private bool Hide(ContentDialogResult result)
 		{
 			void Complete(ContentDialogClosingEventArgs args)
 			{
 				if (!args.Cancel)
 				{
 					_popup.IsOpen = false;
+					_popup.Child = null;
 
 					Closed?.Invoke(this, new ContentDialogClosedEventArgs(result));
 				}
@@ -87,6 +106,8 @@ namespace Windows.UI.Xaml.Controls
 			{
 				closingArgs.EventRaiseCompleted();
 			}
+
+			return !closingArgs.Cancel;
 		}
 
 		protected override void OnApplyTemplate()
@@ -104,6 +125,9 @@ namespace Windows.UI.Xaml.Controls
 				{
 					throw new InvalidOperationException("A ContentDialog is already opened.");
 				}
+
+				// Make sure default template is applied, so visual states etc can be set correctly
+				EnsureTemplate();
 
 				_popup.Child = this;
 
@@ -250,9 +274,13 @@ namespace Windows.UI.Xaml.Controls
 				if (!a.Cancel)
 				{
 					const ContentDialogResult result = ContentDialogResult.None;
-					_tcs.SetResult(result);
+
 					CloseButtonCommand.ExecuteIfPossible(CloseButtonCommandParameter);
-					Hide(result);
+
+					if (Hide(result))
+					{
+						_tcs.SetResult(result);
+					}
 				}
 			}
 
@@ -272,9 +300,11 @@ namespace Windows.UI.Xaml.Controls
 				if (!a.Cancel)
 				{
 					const ContentDialogResult result = ContentDialogResult.Secondary;
-					_tcs.SetResult(result);
 					SecondaryButtonCommand.ExecuteIfPossible(SecondaryButtonCommandParameter);
-					Hide(result);
+					if (Hide(result))
+					{
+						_tcs.SetResult(result);
+					}
 				}
 			}
 
@@ -295,10 +325,12 @@ namespace Windows.UI.Xaml.Controls
 				if (!a.Cancel)
 				{
 					const ContentDialogResult result = ContentDialogResult.Primary;
-					_tcs.SetResult(result);
 					PrimaryButtonCommand.ExecuteIfPossible(PrimaryButtonCommandParameter);
 
-					Hide(result);
+					if (Hide(result))
+					{
+						_tcs.SetResult(result);
+					}
 				}
 			}
 
@@ -310,11 +342,6 @@ namespace Windows.UI.Xaml.Controls
 				Complete(args);
 			}
 		}
-
-		// Override the default style resolution, as ContentDialog
-		// is almost always overridden when defined in XAML.
-		internal override Type GetDefaultStyleType()
-			=> typeof(ContentDialog);
 
 		private void OnDefaultButtonChanged(ContentDialogButton oldValue, ContentDialogButton newValue)
 		{

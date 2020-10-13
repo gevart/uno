@@ -17,7 +17,7 @@ namespace Uno.UI.Xaml
 		PointerMoved = 1UL << 4,
 		PointerCanceled = 1UL << 5,
 		PointerCaptureLost = 1UL << 6,
-		// PointerWheelChanged = 1UL << 7, => Reserved for future usage
+		PointerWheelChanged = 1UL << 7,
 
 		// Keyboard
 		// PreviewKeyDown = 1UL << 12 => Reserved for future usage
@@ -55,8 +55,8 @@ namespace Uno.UI.Xaml
 		// Gestures
 		Tapped = 1UL << 48,
 		DoubleTapped = 1UL << 49,
-		// RightTapped = 1UL << 50, => Reserved for future usage 
-		// Holding = 1UL << 51, => Reserved for future usage 
+		RightTapped = 1UL << 50,
+		Holding = 1UL << 51, 
 
 		// Context menu
 		// ContextRequested = 1UL << 61, => Reserved for future usage 
@@ -72,8 +72,8 @@ namespace Uno.UI.Xaml
 			| RoutedEventFlag.PointerExited
 			| RoutedEventFlag.PointerMoved
 			| RoutedEventFlag.PointerCanceled
-			| RoutedEventFlag.PointerCaptureLost;
-			//| RoutedEventFlag.PointerWheelChanged;
+			| RoutedEventFlag.PointerCaptureLost
+			| RoutedEventFlag.PointerWheelChanged;
 
 		private const RoutedEventFlag _isKey = // 0b0000_0000_0000_0000___0000_0000_0000_0000___0000_0000_0001_1111___1111_0000_0000_0000
 			  RoutedEventFlag.KeyDown
@@ -98,8 +98,10 @@ namespace Uno.UI.Xaml
 			| RoutedEventFlag.ManipulationCompleted;
 
 		private const RoutedEventFlag _isGesture = // 0b0000_0000_0001_1111___0000_0000_0000_0000___0000_0000_0000_0000___0000_0000_0000_0000
-			  RoutedEventFlag.Tapped
-			| RoutedEventFlag.DoubleTapped;
+			RoutedEventFlag.Tapped
+			| RoutedEventFlag.DoubleTapped
+			| RoutedEventFlag.RightTapped
+			| RoutedEventFlag.Holding;
 
 		private const RoutedEventFlag _isContextMenu = (RoutedEventFlag)0b0011_0000_0000_0000___0000_0000_0000_0000___0000_0000_0000_0000___0000_0000_0000_0000;
 			//   RoutedEventFlag.ContextRequested

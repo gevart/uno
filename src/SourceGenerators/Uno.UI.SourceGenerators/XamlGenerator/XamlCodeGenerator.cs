@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using Uno.SourceGeneration;
@@ -6,6 +7,7 @@ using Uno.UI.SourceGenerators.Telemetry;
 
 namespace Uno.UI.SourceGenerators.XamlGenerator
 {
+	[GenerateAfter("Uno.UI.SourceGenerators.DependencyObject." + nameof(DependencyObject.DependencyPropertyGenerator))]
 	public class XamlCodeGenerator : SourceGenerator
 	{
 		public override void Execute(SourceGeneratorContext context)

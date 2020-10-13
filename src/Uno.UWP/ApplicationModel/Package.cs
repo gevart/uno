@@ -31,16 +31,16 @@ namespace Windows.ApplicationModel
 		public string Description => "";
 
 		[global::Uno.NotImplemented]
-		public string DisplayName => "";
-
-		[global::Uno.NotImplemented]
 		public bool IsBundle => false;
 
 		[global::Uno.NotImplemented]
 		public bool IsResourcePackage => false;
 
+
+#if (__IOS__ || __ANDROID__ || __MACOS__)
 		[global::Uno.NotImplemented]
 		public global::System.Uri Logo => new Uri("http://example.com");
+#endif
 
 		[global::Uno.NotImplemented]
 		public string PublisherDisplayName => "";

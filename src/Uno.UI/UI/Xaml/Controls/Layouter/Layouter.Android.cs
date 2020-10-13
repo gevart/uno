@@ -1,5 +1,4 @@
-﻿#if XAMARIN_ANDROID
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -16,7 +15,7 @@ using Uno.UI;
 
 namespace Windows.UI.Xaml.Controls
 {
-	public abstract partial class Layouter
+	abstract partial class Layouter
 	{
 		public static void SetMeasuredDimensions(View view, int width, int height)
 		{
@@ -51,14 +50,7 @@ namespace Windows.UI.Xaml.Controls
 		{
 			var uiElement = view as UIElement;
 
-			if (uiElement != null)
-			{
-				return uiElement.DesiredSize;
-			}
-			else
-			{
-				return LayouterHelper.LayoutProperties.GetValue(view, "desiredSize", () => default(Size));
-			}
+			return uiElement?.DesiredSize ?? LayouterHelper.LayoutProperties.GetValue(view, "desiredSize", () => default(Size));
 		}
 
 		protected Size MeasureChildOverride(View view, Size slotSize)
@@ -66,20 +58,42 @@ namespace Windows.UI.Xaml.Controls
 			var widthSpec = ViewHelper.SpecFromLogicalSize(slotSize.Width);
 			var heightSpec = ViewHelper.SpecFromLogicalSize(slotSize.Height);
 
+			if (double.IsPositiveInfinity(slotSize.Width) || double.IsPositiveInfinity(slotSize.Height))
+			{
+				// Bypass Android cache, to ensure the Child's Measure() is actually invoked.
+				view.ForceLayout();
+
+				// This could occur when one of the dimension is _Infinite_: Android will cache the
+				// value, which is not something we want. Specially when the container is a <StackPanel>.
+
+				// Issue: https://github.com/unoplatform/uno/issues/2879
+			}
+
 			MeasureChild(view, widthSpec, heightSpec);
 			
 			var ret = Uno.UI.Controls.BindableView.GetNativeMeasuredDimensionsFast(view)
 				.PhysicalToLogicalPixels();
 
-			ret.Width = Math.Min(slotSize.Width, ret.Width);
-			ret.Height = Math.Min(slotSize.Height, ret.Height);
-
-			return ret;
+			return ret.AtMost(slotSize);
 		}
 
 		protected abstract void MeasureChild(View view, int widthSpec, int heightSpec);
 
+		private void SetArrangeLogicalSize(View view, Rect frame)
+		{
+			if (view is UIElement uiElement)
+			{
+				uiElement.ArrangeLogicalSize = frame;
+			}
+		}
 
+		private void ResetArrangeLogicalSize(View view)
+		{
+			if (view is UIElement uiElement)
+			{
+				uiElement.ArrangeLogicalSize = null;
+			}
+		}
 
 		protected void ArrangeChildOverride(View view, Rect frame)
 		{
@@ -87,16 +101,25 @@ namespace Windows.UI.Xaml.Controls
 
 			var physicalFrame = frame.LogicalToPhysicalPixels();
 
-			view.Layout(
-				(int)physicalFrame.Left,
-				(int)physicalFrame.Top,
-				(int)physicalFrame.Right,
-				(int)physicalFrame.Bottom
-			);
+			try
+			{
+				SetArrangeLogicalSize(view, frame);
+
+				view.Layout(
+					(int)physicalFrame.Left,
+					(int)physicalFrame.Top,
+					(int)physicalFrame.Right,
+					(int)physicalFrame.Bottom
+				);
+			}
+			finally
+			{
+				ResetArrangeLogicalSize(view);
+			}
 		}
 	}
 
-	public static partial class LayouterExtensions
+	internal static partial class LayouterExtensions
 	{
 		public static IEnumerable<View> GetChildren(this Layouter layouter)
 		{
@@ -104,4 +127,3 @@ namespace Windows.UI.Xaml.Controls
 		}
 	}
 }
-#endif

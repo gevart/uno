@@ -54,7 +54,10 @@ namespace Windows.UI.Xaml.Controls
 
 		static TextBlock()
 		{
-			InitializeStaticLayoutInterop();
+			if ((int)Android.OS.Build.VERSION.SdkInt < 28)
+			{
+				InitializeStaticLayoutInterop();
+			}
 		}
 
 		/// <summary>
@@ -108,7 +111,7 @@ namespace Windows.UI.Xaml.Controls
 		private Java.Lang.ICharSequence _textFormatted;
 		private TextPaint _paint;
 		private TextUtils.TruncateAt _ellipsize;
-		private Layout.Alignment _layoutAlignment;
+		private Android.Text.Layout.Alignment _layoutAlignment;
 
 		private void InitializePartial()
 		{
@@ -134,12 +137,14 @@ namespace Windows.UI.Xaml.Controls
 		partial void OnFontSizeChangedPartial() => _paint = null;
 		partial void OnCharacterSpacingChangedPartial() => _paint = null;
 		partial void OnForegroundChangedPartial() => _paint = null;
+		partial void OnTextDecorationsChangedPartial() => _paint = null;
 
 		// Invalidate _ellipsize
 		partial void OnTextTrimmingChangedPartial() => _ellipsize = null;
 
 		// Invalidate _layoutAlignment
 		partial void OnTextAlignmentChangedPartial() => _layoutAlignment = null;
+
 
 		#endregion
 
@@ -205,13 +210,22 @@ namespace Windows.UI.Xaml.Controls
 				return;
 			}
 
+			var foreground = Brush
+				.GetColorWithOpacity(Foreground, Colors.Transparent)
+				.Value;
+
+			var shader = Foreground is GradientBrush gb
+				? gb.GetShader(LayoutSlot.LogicalToPhysicalPixels())
+				: null;
+
 			_paint = TextPaintPool.GetPaint(
 				FontWeight,
 				FontStyle,
 				FontFamily,
 				FontSize,
 				CharacterSpacing,
-				(Foreground as SolidColorBrush)?.Color ?? Colors.Transparent,
+				foreground,
+				shader,
 				BaseLineAlignment.Baseline,
 				TextDecorations
 			);
@@ -277,13 +291,13 @@ namespace Windows.UI.Xaml.Controls
 			{
 				Update();
 
-				availableSize.Width -= Padding.Left + Padding.Right;
-				availableSize.Height -= Padding.Top + Padding.Bottom;
+				var padding = Padding;
+
+				availableSize = availableSize.Subtract(padding);
 
 				var measuredSize = UpdateLayout(ref _measureLayout, availableSize, false);
 
-				measuredSize.Width += Padding.Left + Padding.Right;
-				measuredSize.Height += Padding.Top + Padding.Bottom;
+				measuredSize = measuredSize.Add(padding);
 
 				return measuredSize;
 			}
@@ -304,8 +318,9 @@ namespace Windows.UI.Xaml.Controls
 
 			using (arrangeActivity)
 			{
-				finalSize.Width -= Padding.Left + Padding.Right;
-				finalSize.Height -= Padding.Top + Padding.Bottom;
+				var padding = Padding;
+
+				var arrangeSize = finalSize.Subtract(padding);
 
 				var originalArrangeLayout = _arrangeLayout;
 
@@ -313,23 +328,23 @@ namespace Windows.UI.Xaml.Controls
 				{
 					// This may happen in the unusual case that the TextBlock's Visibility changes during an arrange pass, such that
 					// ArrangeOverride is called without MeasureOverride having being called.
-					UpdateLayout(ref _measureLayout, finalSize, exactWidth: true);
+					UpdateLayout(ref _measureLayout, arrangeSize, exactWidth: true);
 				}
 
 				// If the width is not the same, the wrapping/trimming may be different.
-				var isSameWidth = _measureLayout.AvailableSize.Width == finalSize.Width;
+				var isSameWidth = _measureLayout.AvailableSize.Width == arrangeSize.Width;
 
 				// If the requested height is the same
-				var isSameHeight = _measureLayout.AvailableSize.Height == finalSize.Width;
+				var isSameHeight = _measureLayout.AvailableSize.Height == arrangeSize.Width;
 
 				// If the measured height is exactly the same
-				var isSameMeasuredHeight = _measureLayout.MeasuredSize.Height == finalSize.Height;
+				var isSameMeasuredHeight = _measureLayout.MeasuredSize.Height == arrangeSize.Height;
 
 				// If the unbound requested height is below the arrange height. In this case, 
 				// the rendered text height is below the arrange size, but since the text 
 				// does not need the whole height to render completely, we can reuse the measured
 				// layout as the arrangeLayout.
-				var isSameUnboundHeight = _measureLayout.MeasuredSize.Height <= finalSize.Height && MaxLines == 0;
+				var isSameUnboundHeight = _measureLayout.MeasuredSize.Height <= arrangeSize.Height && MaxLines == 0;
 
 				//If the measure height is the arrange height.
 				isSameHeight = isSameHeight || isSameMeasuredHeight || isSameUnboundHeight;
@@ -343,16 +358,13 @@ namespace Windows.UI.Xaml.Controls
 				else
 				{
 					// The layout is different and needs to be rebuilt.
-					UpdateLayout(ref _arrangeLayout, finalSize, exactWidth: true);
+					UpdateLayout(ref _arrangeLayout, arrangeSize, exactWidth: true);
 				}
 
 				if (originalArrangeLayout != _arrangeLayout)
 				{
 					UpdateNativeTextBlockLayout();
 				}
-
-				finalSize.Width += Padding.Left + Padding.Right;
-				finalSize.Height += Padding.Top + Padding.Bottom;
 
 				return finalSize;
 			}
@@ -420,7 +432,7 @@ namespace Windows.UI.Xaml.Controls
 		{
 			private readonly Java.Lang.ICharSequence _textFormatted;
 			private readonly TextUtils.TruncateAt _ellipsize;
-			private readonly Layout.Alignment _layoutAlignment;
+			private readonly Android.Text.Layout.Alignment _layoutAlignment;
 			private readonly TextWrapping _textWrapping;
 			private readonly int _maxLines;
 			private readonly bool _exactWidth;
@@ -441,7 +453,7 @@ namespace Windows.UI.Xaml.Controls
 			/// <summary>
 			/// The layout to be drawn
 			/// </summary>
-			public Layout Layout { get; private set; }
+			public Android.Text.Layout Layout { get; private set; }
 
 			/// <summary>
 			/// Builds a new layout with the specified parameters.
@@ -450,7 +462,7 @@ namespace Windows.UI.Xaml.Controls
 				Java.Lang.ICharSequence textFormatted,
 				TextPaint paint,
 				TextUtils.TruncateAt ellipsize,
-				Layout.Alignment layoutAlignment,
+				Android.Text.Layout.Alignment layoutAlignment,
 				TextWrapping textWrapping,
 				int maxLines,
 				Size availableSize,
@@ -572,6 +584,9 @@ namespace Windows.UI.Xaml.Controls
 						desiredWidth,
 						maxLines: lineAtHeight
 					);
+
+					// re-measuring the height at the new line count
+					measuredHeight = Layout.GetLineTop(Layout.LineCount);
 				}
 
 				return new Size(PhysicalToLogicalPixels(Layout.Width), PhysicalToLogicalPixels(measuredHeight));
@@ -648,7 +663,9 @@ namespace Windows.UI.Xaml.Controls
 					}
 				}
 
-				Layout = UnoStaticLayoutBuilder.Build(
+				if ((int)Android.OS.Build.VERSION.SdkInt < 28)
+				{
+					Layout = UnoStaticLayoutBuilder.Build(
 						/*source:*/ _textFormatted,
 						/*paint: */ _paint,
 						/*outerwidth: */ width,
@@ -660,6 +677,21 @@ namespace Windows.UI.Xaml.Controls
 						/*ellipsizedWidth: */ width,
 						/*maxLines: */ maxLines
 					);
+				}
+				else
+				{
+					Layout = StaticLayout.Builder.Obtain(_textFormatted, 0, _textFormatted.Length(), _paint, width)
+					.SetLineSpacing(_addedSpacing = GetSpacingAdd(_paint), 1)
+					.SetMaxLines(maxLines)
+					.SetEllipsize(_ellipsize)
+					.SetEllipsizedWidth(width)
+					.SetAlignment(_layoutAlignment)
+					.SetIncludePad(true)
+					.Build();
+				}
+
+
+
 			}
 		}
 

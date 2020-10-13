@@ -14,6 +14,8 @@ using Microsoft.CodeAnalysis;
 using Microsoft.Build.Execution;
 using Uno.UI.SourceGenerators.XamlGenerator;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.CSharp;
+using System.Reflection.Metadata.Ecma335;
 
 namespace Uno.UI.SourceGenerators.BindableTypeProviders
 {
@@ -31,7 +33,7 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 		private INamedTypeSymbol _javaObjectSymbol;
 		private INamedTypeSymbol _nsObjectSymbol;
 		private INamedTypeSymbol _nonBindableSymbol;
-
+		private INamedTypeSymbol _resourceDictionarySymbol;
 		private IModuleSymbol _currentModule;
 
 		public string[] AnalyzerSuppressions { get; set; }
@@ -58,7 +60,7 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 						_nsObjectSymbol = context.Compilation.GetTypeByMetadataName("Foundation.NSObject");
 						_stringSymbol = context.Compilation.GetTypeByMetadataName("System.String");
 						_nonBindableSymbol = context.Compilation.GetTypeByMetadataName("Windows.UI.Xaml.Data.NonBindableAttribute");
-
+						_resourceDictionarySymbol = context.Compilation.GetTypeByMetadataName("Windows.UI.Xaml.ResourceDictionary");
 						_currentModule = context.Compilation.SourceModule;
 
 						AnalyzerSuppressions = new string[0];
@@ -97,12 +99,12 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 			var isiOSApp = projectInstance.GetPropertyValue("ProjectTypeGuids")?.Equals("{FEACFBD2-3405-455C-9665-78FE426C6842};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}", StringComparison.OrdinalIgnoreCase) ?? false;
 			var ismacOSApp = projectInstance.GetPropertyValue("ProjectTypeGuids")?.Equals("{A3F8F2AB-B479-4A4A-A458-A89E7DC349F1};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}", StringComparison.OrdinalIgnoreCase) ?? false;
 			var isExe = projectInstance.GetPropertyValue("OutputType")?.Equals("Exe", StringComparison.OrdinalIgnoreCase) ?? false;
-			var isWasm = projectInstance.GetPropertyValue("WasmHead")?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
+			var isUnoHead = projectInstance.GetPropertyValue("IsUnoHead")?.Equals("true", StringComparison.OrdinalIgnoreCase) ?? false;
 
 			return isAndroidApp
 				|| (isiOSApp && isExe)
 				|| (ismacOSApp && isExe)
-				|| isWasm;
+				|| isUnoHead;
 		}
 
 		private string GenerateTypeProviders(IEnumerable<IModuleSymbol> modules)
@@ -127,7 +129,8 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 			writer.AppendLineInvariant("// *****************************************************************************");
 			writer.AppendLineInvariant("// </auto-generated>");
 			writer.AppendLine();
-			writer.AppendLineInvariant("#pragma warning disable 618 // Ignore obsolete members warnings");
+			writer.AppendLineInvariant("#pragma warning disable 618  // Ignore obsolete members warnings");
+			writer.AppendLineInvariant("#pragma warning disable 1591 // Ignore missing XML comment warnings");
 			writer.AppendLineInvariant("using System;");
 			writer.AppendLineInvariant("using System.Linq;");
 			writer.AppendLineInvariant("using System.Diagnostics;");
@@ -141,7 +144,12 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 			return writer.ToString();
 		}
 
-		private bool IsValidProvider(INamedTypeSymbol type) => type.IsLocallyPublic(_currentModule);
+		private bool IsValidProvider(INamedTypeSymbol type)
+			=> type.IsLocallyPublic(_currentModule)
+
+			// Exclude resource dictionaries for linking constraints (XamlControlsResources in particular)
+			// Those are not databound, so there's no need to generate providers for them.
+			&& !type.Is(_resourceDictionarySymbol);
 
 		private void GenerateProviderTable(IEnumerable<INamedTypeSymbol> q, IndentedStringBuilder writer)
 		{
@@ -219,10 +227,10 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 					{
 						using (writer.BlockInvariant(@"lock(_knownMissingTypes)"))
 						{
-							using (writer.BlockInvariant(@"if(!_knownMissingTypes.Contains(type))"))
+							using (writer.BlockInvariant(@"if(!_knownMissingTypes.Contains(type) && !type.IsGenericType)"))
 							{
 								writer.AppendLineInvariant(@"_knownMissingTypes.Add(type);");
-								writer.AppendLineInvariant(@"Debug.WriteLine($""The type [{{type.FullName}}] is not known by the MetadataProvider, either add the Bindable attribute or add it to the TypeMetadataConfig.xml"");");
+								writer.AppendLineInvariant(@"Debug.WriteLine($""The Bindable attribute is missing and the type [{{type.FullName}}] is not known by the MetadataProvider. Reflection was used instead of the binding engine and generated static metadata. Add the Bindable attribute to prevent this message and performance issues."");");
 							}
 						}
 					}
@@ -295,13 +303,13 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 			var propertyDependencyProperties =
 				from property in ownerType.GetProperties()
 				where property.IsStatic
-					&& property.Type == _dependencyPropertySymbol
+					&& Equals(property.Type, _dependencyPropertySymbol)
 				select property.Name;
 
 			var fieldDependencyProperties =
 				from field in ownerType.GetFields()
 				where field.IsStatic
-					&& field.Type == _dependencyPropertySymbol
+					&& Equals(field.Type, _dependencyPropertySymbol)
 				select field.Name;
 
 			var dependencyProperties = fieldDependencyProperties
@@ -386,7 +394,7 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 
 					foreach (var property in properties)
 					{
-						var propertyTypeName = GetGlobalQualifier(property.Type) + SanitizeTypeName(property.Type.ToString());
+						var propertyTypeName = GetFullyQualifiedType(property.Type);
 						var propertyName = property.Name;
 
 						if (IsStringIndexer(property))
@@ -466,15 +474,9 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 
 						if (getMethod != null)
 						{
-							var getter = $"{XamlConstants.Types.DependencyObjectExtensions}.GetValue(instance, {ownerTypeName}.{propertyName}Property, precedence)";
-							var setter = $"{XamlConstants.Types.DependencyObjectExtensions}.SetValue(instance, {ownerTypeName}.{propertyName}Property, value, precedence)";
-
 							var propertyType = GetGlobalQualifier(getMethod.ReturnType) + SanitizeTypeName(getMethod.ReturnType.ToString());
 
-							writer.AppendLineInvariant($@"bindableType.AddProperty(""{propertyName}"", typeof({propertyType}),  Get{propertyName}, Set{propertyName});");
-
-							postWriter.AppendLineInvariant($@"private static object Get{propertyName}(object instance,  Windows.UI.Xaml.DependencyPropertyValuePrecedences? precedence) => {getter};");
-							postWriter.AppendLineInvariant($@"private static void Set{propertyName}(object instance, object value, Windows.UI.Xaml.DependencyPropertyValuePrecedences? precedence) => {setter};");
+							writer.AppendLineInvariant($@"bindableType.AddProperty({ownerType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}.{dependencyProperty});");
 						}
 					}
 
@@ -485,6 +487,24 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 			}
 
 			writer.AppendLine();
+		}
+
+		private object GetFullyQualifiedType(ITypeSymbol type)
+		{
+			if(type is INamedTypeSymbol namedTypeSymbol)
+			{
+				if (namedTypeSymbol.IsGenericType && !namedTypeSymbol.IsNullable())
+				{
+					return SymbolDisplay.ToDisplayString(type, format: new SymbolDisplayFormat(
+						globalNamespaceStyle: SymbolDisplayGlobalNamespaceStyle.Included,
+						typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+						genericsOptions: SymbolDisplayGenericsOptions.None,
+						miscellaneousOptions: SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers))
+						+ "<" + string.Join(", ", namedTypeSymbol.TypeArguments.Select(GetFullyQualifiedType)) + ">";
+				}
+			}
+
+			return type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 		}
 
 		private static string ExpandType(INamedTypeSymbol ownerType)
@@ -537,9 +557,9 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 				var ignoredByConfig = IsIgnoredType(type.BaseType);
 
 				// These types are know to not be bindable, so ignore them by default.
-				var isKnownBaseType = type.BaseType == _objectSymbol
-					|| type.BaseType == _javaObjectSymbol
-					|| type.BaseType == _nsObjectSymbol;
+				var isKnownBaseType = Equals(type.BaseType, _objectSymbol)
+					|| Equals(type.BaseType, _javaObjectSymbol)
+					|| Equals(type.BaseType, _nsObjectSymbol);
 
 				if(!ignoredByConfig && !isKnownBaseType)
 				{
@@ -566,7 +586,7 @@ namespace Uno.UI.SourceGenerators.BindableTypeProviders
 			return property.IsIndexer
 				&& property.GetMethod.IsLocallyPublic(_currentModule)
 				&& property.Parameters.Length == 1
-				&& property.Parameters.Any(p => p.Type == _stringSymbol);
+				&& property.Parameters.Any(p => Equals(p.Type, _stringSymbol));
 		}
 
 		private bool IsNonBindable(IPropertySymbol property) => property.FindAttributeFlattened(_nonBindableSymbol) != null;
